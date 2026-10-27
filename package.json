@@ -1,0 +1,5 @@
+{
+  "name": "blockops", "version": "0.1.0", "private": true,
+  "workspaces": ["apps/desktop"],
+  "scripts": {"dev": "npm run dev -w apps/desktop", "build": "npm run build -w apps/desktop", "desktop": "npm run tauri -w apps/desktop -- dev"}
+}
