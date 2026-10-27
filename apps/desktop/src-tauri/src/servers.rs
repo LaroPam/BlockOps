@@ -1,5 +1,7 @@
 use blockops_server_manager::{
-    process::Process, stop_states::StopStates, Manager, Server, Settings,
+    process::{Process, ProcessStatus},
+    stop_states::StopStates,
+    Manager, Server, Settings,
 };
 use serde::Serialize;
 use std::{collections::HashMap, sync::Arc};
