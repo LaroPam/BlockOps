@@ -47,7 +47,7 @@ def main():
                                          '--name', original_settings['name'],
                                          '--memory-mb', str(original_settings['memory_mb']),
                                          '--port', str(original_settings['port']),
-                                         '--max-players', str(players), '--difficulty', 'hard',
+                                         '--max-players', str(players), '--difficulty', 'hard', '--game-mode', 'survival', '--pvp', 'true',
                                          '--whitelist', str(original_settings.get('whitelist', False)).lower()))
             assert updated['settings']['max_players'] == players
             props = (server / 'server.properties').read_text()
