@@ -1,0 +1,15 @@
+$ErrorActionPreference = 'Stop'
+$installer = Get-ChildItem 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe' | Select-Object -First 1
+if (-not $installer) { throw 'NSIS installer was not produced.' }
+$installDir = Join-Path $env:RUNNER_TEMP 'BlockOpsInstallerSmoke'
+if (Test-Path $installDir) { throw 'Smoke install destination already exists.' }
+$install = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$installDir" -PassThru -Wait
+if ($install.ExitCode -ne 0) { throw "Silent installation failed with exit code $($install.ExitCode)." }
+$exe = Get-ChildItem -Path $installDir -Filter '*.exe' -File | Where-Object { $_.Name -ne 'uninstall.exe' } | Select-Object -First 1
+if (-not $exe) { throw 'Application executable missing after installation.' }
+$uninstaller = Join-Path $installDir 'uninstall.exe'
+if (-not (Test-Path $uninstaller)) { throw 'Uninstaller missing after installation.' }
+$uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru -Wait
+if ($uninstall.ExitCode -ne 0) { throw "Silent uninstallation failed with exit code $($uninstall.ExitCode)." }
+if (Test-Path $exe.FullName) { throw 'Application executable remains after uninstallation.' }
+Write-Host 'NSIS installation and uninstallation completed. GUI runtime was not tested.'

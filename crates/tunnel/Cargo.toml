@@ -1,0 +1,18 @@
+[package]
+name = "blockops-tunnel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libp2p.workspace = true
+libp2p-stream = "0.4.0-alpha"
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
+rand = "0.8"
+hex = "0.4"
+subtle = "2"

@@ -1,0 +1,8 @@
+# Replace this example hostname with a domain controlled by the operator.
+connect.example.org {
+    # This pilot has no access-log directive. Never log Authorization or bodies.
+    request_body {
+        max_size 8KB
+    }
+    reverse_proxy 127.0.0.1:8080
+}
