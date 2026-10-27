@@ -310,3 +310,15 @@ pub async fn send_console(
     };
     console.send(&command).await.map_err(|e| format!("{e:#}"))
 }
+
+#[tauri::command]
+pub async fn whitelist_player(
+    state: State<'_, Servers>,
+    id: String,
+    action: blockops_server_manager::whitelist::Action,
+    player: Option<String>,
+) -> Result<(), String> {
+    let command = blockops_server_manager::whitelist::command(action, player.as_deref())
+        .map_err(|e| e.to_string())?;
+    send_console(state, id, command).await
+}

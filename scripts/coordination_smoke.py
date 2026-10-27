@@ -28,7 +28,8 @@ def main():
     def ready(child):
         result = child.stdout.readline().strip()
         if not result:
-            raise RuntimeError('Process failed before readiness')
+            reason = child.stderr.read().strip() if child.poll() is not None else ''
+            raise RuntimeError(f'{Path(child.args[0]).name} failed before readiness: {reason[-1200:]}')
         return result
     def cleanup():
         for child in processes:
@@ -80,7 +81,7 @@ def main():
             replay = launch('blockops-coordination', 'join', '--coordinator', address,
                             '--code-file', str(path), '--bind', '127.0.0.1:0')
             assert replay.wait(timeout=15) != 0, 'Code was reused'
-        print('PASS: short code → identity binding → relay → ' +
+        print('PASS: short code -> identity binding -> relay -> ' +
               ('Minecraft status/ping' if args.minecraft_port else 'binary TCP echo') + '; replay rejected')
     finally:
         watchdog.cancel()

@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { Backups } from './Backups';
 import { EditSettings } from './EditSettings';
 import { Console } from './Console';
-type Server = {id:string; version:string; settings:{name:string;memory_mb:number;port:number;difficulty:string;max_players:number}};
+import { Whitelist } from './Whitelist';
+type Server = {id:string; version:string; settings:{name:string;memory_mb:number;port:number;difficulty:string;max_players:number;whitelist:boolean}};
 type Row = {server:Server;process:null|{phase:string;logs:string[];error:string|null;exit_code:number|null}};
 const phases:Record<string,string>={starting:'Запускается',running:'Работает',stopping:'Останавливается',stopped:'Остановлен',failed:'Ошибка'};
 export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;onInvite:()=>void;relay:string;createSignal:number}) {
@@ -13,6 +14,7 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
   const [version,setVersion]=useState('1.21.1');
   const [name,setName]=useState('Мой мир'); const [memory,setMemory]=useState(2048);
   const [port,setPort]=useState(25565); const [players,setPlayers]=useState(10);
+  const [whitelist,setWhitelist]=useState(false);
   const [difficulty,setDifficulty]=useState('normal'); const [accepted,setAccepted]=useState(false);
   const [error,setError]=useState(''); const [busy,setBusy]=useState(false);
   const [createOpen,setCreateOpen]=useState(false);
@@ -23,7 +25,7 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
   async function action(command:string,args:Record<string,unknown>={}) {
     setBusy(true);setError('');try{await invoke(command,args);if(command==='invite_server')onInvite();try{await refresh();}catch{/* Keep a successful operation successful; the list has its own error. */}return true;}catch(e){setError(String(e));return false;}finally{setBusy(false);}
   }
-  async function create(e:FormEvent){e.preventDefault();setCreating(true);const ok=await action('create_server',{settings:{name,memory_mb:memory,port,max_players:players,difficulty},acceptEula:accepted,version});setCreating(false);setAccepted(false);if(ok)setCreateOpen(false);}
+  async function create(e:FormEvent){e.preventDefault();setCreating(true);const ok=await action('create_server',{settings:{name,memory_mb:memory,port,max_players:players,difficulty,whitelist},acceptEula:accepted,version});setCreating(false);setAccepted(false);if(ok)setCreateOpen(false);}
   return <section className="servers"><h2>Ваши серверы</h2><p>Vanilla с Java 21. Каждый мир хранится отдельно.</p>
     {!desktop ? <p>Список серверов доступен в приложении.</p> : !loaded ? <p>Загружаем список серверов…</p> : listError ? <p role="alert" className="error">Не удалось получить список серверов: {listError}</p> : rows.length===0 && <p>У вас пока нет серверов. Создайте первый мир.</p>}
     {rows.map(({server,process})=><article className="card server" key={server.id}>
@@ -32,6 +34,7 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
       <button disabled={busy||!process||['stopped','failed'].includes(process.phase)} onClick={()=>action('stop_server',{id:server.id})}>Остановить</button>
       <button disabled={busy||process?.phase!=='running'} onClick={()=>action('invite_server',{id:server.id,relay:relay.trim()||null})}>Пригласить друга</button></div>
       <div className="server-tools"><EditSettings server={server} running={!!process && !['stopped','failed'].includes(process.phase)} desktop={desktop} onSaved={refresh}/><Backups serverId={server.id} running={!!process && !['stopped','failed'].includes(process.phase)} desktop={desktop}/></div>
+      <Whitelist id={server.id} enabled={server.settings.whitelist} running={process?.phase==='running'}/>
       {process?.error&&<p role="alert" className="error">{process.error}</p>}
       {process&&<details><summary>Консоль, последние 200 строк</summary><pre className="console">{process.logs.join('\n')||'Ожидаем вывод Java…'}</pre><Console id={server.id} running={process.phase==='running'}/></details>}
     </article>)}
@@ -43,6 +46,8 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
       <div><label htmlFor="port">Локальный порт</label><input id="port" type="number" min={1024} max={65535} required value={port} onChange={e=>setPort(Number(e.target.value))}/></div>
       <div><label htmlFor="players">Максимум игроков</label><input id="players" type="number" min={1} max={100} required value={players} onChange={e=>setPlayers(Number(e.target.value))}/></div>
       <div><label htmlFor="difficulty">Сложность</label><select id="difficulty" value={difficulty} onChange={e=>setDifficulty(e.target.value)}><option value="peaceful">Мирная</option><option value="easy">Лёгкая</option><option value="normal">Обычная</option><option value="hard">Сложная</option></select></div></div>
+      <label className="checkbox"><input type="checkbox" checked={whitelist} onChange={e=>setWhitelist(e.target.checked)}/> Разрешать вход только игрокам из списка допуска</label>
+      {whitelist && <p>После запуска добавьте имена игроков в список допуска. Пока он пуст, обычные игроки не смогут войти.</p>}
       <p>Скачаем сервер Mojang и Java Eclipse Temurin с проверкой хешей. Потребуется несколько сотен мегабайт; создание мира дополнительно занимает место.</p>
       <p><button type="button" disabled={!desktop} onClick={()=>{void invoke('open_eula').catch(e=>setError(String(e)));}}>Открыть Minecraft EULA в браузере</button></p><code className="eula-url">https://www.minecraft.net/eula</code>
       <label className="checkbox"><input type="checkbox" checked={accepted} onChange={e=>setAccepted(e.target.checked)}/> Я прочитал(а) и принимаю Minecraft EULA для этого сервера.</label>

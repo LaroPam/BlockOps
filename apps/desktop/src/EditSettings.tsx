@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
-type Settings = { name: string; memory_mb: number; port: number; max_players: number; difficulty: string };
+type Settings = { name: string; memory_mb: number; port: number; max_players: number; difficulty: string; whitelist: boolean };
 type Server = { id: string; settings: Settings };
 
 /** The backend locks the server and validates all changes before writing them. */
@@ -48,6 +48,8 @@ export function EditSettings({ server, running, desktop, onSaved }: {
           <option value="normal">Обычная</option><option value="hard">Сложная</option>
         </select></div>
     </div>
+    <label className="checkbox"><input type="checkbox" checked={draft.whitelist} onChange={e => setDraft({ ...draft, whitelist: e.target.checked })}/> Разрешать вход только игрокам из списка допуска</label>
+    {draft.whitelist && <p>Добавьте имена игроков после запуска. Пустой список не пропускает обычных игроков.</p>}
     {error && <p role="alert" className="error">{error}</p>}
     <div className="actions"><button type="submit" disabled={busy || running || !desktop}>Сохранить</button>
       <button type="button" disabled={busy} onClick={() => setOpen(false)}>Отмена</button></div>

@@ -7,6 +7,7 @@ fn settings() -> Settings {
         port: 25565,
         max_players: 10,
         difficulty: Difficulty::Normal,
+        whitelist: false,
     }
 }
 #[tokio::test]
@@ -360,4 +361,45 @@ async fn version_selection_rejects_unapproved_and_unsupported_releases() {
     assert!(manager.list().unwrap().is_empty());
     assert!(artifacts::supported_version("1.21.1"));
     assert!(artifacts::supported_version("1.21.4"));
+}
+
+#[test]
+fn whitelist_command_rejects_unsafe_names_and_multiline_input() {
+    use blockops_server_manager::whitelist::{command, Action};
+    assert_eq!(
+        command(Action::Add, Some("Player_123")).unwrap(),
+        "whitelist add Player_123"
+    );
+    assert_eq!(
+        command(Action::Remove, Some("Player_123")).unwrap(),
+        "whitelist remove Player_123"
+    );
+    assert_eq!(command(Action::List, None).unwrap(), "whitelist list");
+    for bad in [
+        "",
+        "abcdefghijklmnopq",
+        "Player\nstop",
+        "Player name",
+        "../../../x",
+        "игрок",
+    ] {
+        assert!(command(Action::Add, Some(bad)).is_err());
+    }
+    assert!(command(Action::List, Some("Player")).is_err());
+}
+
+#[test]
+fn old_settings_deserialize_with_whitelist_disabled() {
+    let old = serde_json::json!({"name":"World","memory_mb":2048,"port":25565,"max_players":10,"difficulty":"normal"});
+    let mut settings: Settings = serde_json::from_value(old).unwrap();
+    assert!(!settings.whitelist);
+    assert!(settings
+        .properties()
+        .unwrap()
+        .contains("white-list=false\n"));
+    settings.whitelist = true;
+    let enabled = settings.properties().unwrap();
+    assert!(enabled.contains("white-list=true\n"));
+    assert!(enabled.contains("online-mode=true\n"));
+    assert!(enabled.contains("server-ip=127.0.0.1\n"));
 }

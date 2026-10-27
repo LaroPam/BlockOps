@@ -191,6 +191,7 @@ mod tests {
             port: 25565,
             max_players: 10,
             difficulty: Difficulty::Normal,
+            whitelist: false,
         }
     }
     fn fixture() -> (tempfile::TempDir, Manager, Server) {
@@ -230,6 +231,7 @@ mod tests {
             port: 25566,
             max_players: 15,
             difficulty: Difficulty::Hard,
+            whitelist: true,
         }
     }
     #[test]
@@ -238,6 +240,7 @@ mod tests {
         let updated = manager.update_settings(&server.id, changed()).unwrap();
         assert_eq!(updated.settings.name, "Updated");
         assert_eq!(manager.get(&server.id).unwrap().settings.memory_mb, 4096);
+        assert!(manager.get(&server.id).unwrap().settings.whitelist);
         let properties = std::fs::read_to_string(
             root.path()
                 .join("servers")
@@ -249,6 +252,7 @@ mod tests {
         assert!(properties.contains("online-mode=true\n"));
         assert!(properties.contains("server-ip=127.0.0.1\n"));
         assert!(properties.contains("difficulty=hard\n"));
+        assert!(properties.contains("white-list=true\n"));
         assert!(properties_match(&properties, &updated.settings.properties().unwrap()).unwrap());
     }
     #[test]

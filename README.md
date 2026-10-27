@@ -37,7 +37,7 @@ check additionally starts **two CLI client processes** and a relay process.
 - Coordination service: single-use codes, guest identity binding, individual revocation,
   bounded request rates and fail-closed access on coordinator outage.
 - Offline world backups with checksum verification and recoverable restoration; the previous world is retained.
-- Edit managed settings for stopped servers with crash recovery.
+- Edit managed settings for stopped servers with crash recovery, including the Minecraft whitelist.
 - Shared Rust host/join API, CLI and Tauri command adapters.
 - Noise-authenticated, multiplexed TCP streams; explicit loopback target; secret expiring
   invitations; fixed destination; bounded stream concurrency and authentication timeout.

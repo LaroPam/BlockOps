@@ -31,6 +31,7 @@ fn fixture() -> Fixture {
             port: 25565,
             max_players: 10,
             difficulty: Difficulty::Normal,
+            whitelist: false,
         },
         version: artifacts::VERSION.into(),
         jar_sha1: "00".repeat(20),
