@@ -66,9 +66,15 @@ jobs:
       - run: npm run test:ui -w apps/desktop
       - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
       - run: npm run tauri -w apps/desktop -- build --ci
-      - name: Smoke test NSIS install and uninstall
+      - name: Smoke test install, window startup and uninstall
         shell: pwsh
-        run: .github/scripts/windows-installer-smoke.ps1
+        run: |
+          try { .github/scripts/windows-installer-smoke.ps1 }
+          catch {
+            $detail = $_.Exception.Message.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+            Write-Output "::error title=Windows application smoke::$detail"
+            throw
+          }
       - name: Upload unsigned installer for review
         uses: actions/upload-artifact@v4
         with:
