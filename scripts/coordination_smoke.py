@@ -28,7 +28,8 @@ def main():
     def ready(child):
         result = child.stdout.readline().strip()
         if not result:
-            raise RuntimeError('Process failed before readiness')
+            reason = child.stderr.read().strip() if child.poll() is not None else ''
+            raise RuntimeError(f'{Path(child.args[0]).name} failed before readiness: {reason[-1200:]}')
         return result
     def cleanup():
         for child in processes:
