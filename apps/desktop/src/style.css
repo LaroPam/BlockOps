@@ -179,3 +179,9 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .action-error summary { color: var(--danger); padding: 12px 0 0; }
 .action-error code { color: var(--danger); margin-top: 10px; white-space: pre-wrap; }
 @media (max-width: 460px) { .server-heading { flex-direction: column; } .server-status { max-width: 100%; } }
+
+/* Open an existing Minecraft LAN world. */
+.lan-card > p { max-width: 56ch; }
+.managed-servers { margin-top: 24px; border-top: 1px solid var(--line); }
+.managed-servers > summary { padding: 18px 0; }
+.managed-servers[open] { padding-bottom: 16px; }
