@@ -170,7 +170,7 @@ fn main() {
             app.manage(servers::Servers {
                 manager,
                 processes: Mutex::new(std::collections::HashMap::new()),
-                stopping: Mutex::new(std::collections::HashMap::new()),
+                stopping: Mutex::new(blockops_server_manager::stop_states::StopStates::default()),
                 installing: Mutex::new(()),
                 disk_operations: std::sync::Arc::new(Mutex::new(())),
                 process_stops: std::sync::Arc::new(Mutex::new(())),
