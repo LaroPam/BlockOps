@@ -3,6 +3,7 @@ pub mod backups;
 pub mod java;
 pub mod process;
 mod settings_update;
+pub mod whitelist;
 use anyhow::{ensure, Context, Result};
 use fs2::FileExt;
 use rusqlite::{params, Connection};
@@ -40,6 +41,8 @@ pub struct Settings {
     pub port: u16,
     pub max_players: u8,
     pub difficulty: Difficulty,
+    #[serde(default)]
+    pub whitelist: bool,
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
@@ -65,7 +68,7 @@ impl Settings {
     }
     pub fn properties(&self) -> Result<String> {
         self.validate()?;
-        Ok(format!("server-ip=127.0.0.1\nserver-port={}\nonline-mode=true\nenforce-secure-profile=true\nenable-rcon=false\nenable-query=false\nwhite-list=false\nlevel-name=world\nmotd=BlockOps Vanilla\ndifficulty={}\nmax-players={}\n",self.port,self.difficulty.value(),self.max_players))
+        Ok(format!("server-ip=127.0.0.1\nserver-port={}\nonline-mode=true\nenforce-secure-profile=true\nenable-rcon=false\nenable-query=false\nwhite-list={}\nlevel-name=world\nmotd=BlockOps Vanilla\ndifficulty={}\nmax-players={}\n",self.port,self.whitelist,self.difficulty.value(),self.max_players))
     }
 }
 #[derive(Clone, Serialize, Deserialize)]

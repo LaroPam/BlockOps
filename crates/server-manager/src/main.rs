@@ -37,6 +37,9 @@ enum Action {
         accept_eula: bool,
         #[arg(long, default_value = "1.21.1")]
         version: String,
+        /// Enable whitelist before first start.
+        #[arg(long)]
+        whitelist: bool,
         #[arg(long, default_value_t = 2048)]
         memory_mb: u32,
         #[arg(long, default_value_t = 25565)]
@@ -58,6 +61,9 @@ enum Action {
         max_players: u8,
         #[arg(long, value_enum)]
         difficulty: DifficultyArg,
+        /// Whether to enable the Minecraft whitelist.
+        #[arg(long, action = clap::ArgAction::Set)]
+        whitelist: bool,
     },
     /// Create a backup of a stopped server's world.
     Backup {
@@ -87,6 +93,7 @@ async fn main() -> Result<()> {
             name,
             accept_eula,
             version,
+            whitelist,
             memory_mb,
             port,
         } => {
@@ -98,6 +105,7 @@ async fn main() -> Result<()> {
                         port,
                         max_players: 10,
                         difficulty: Difficulty::Normal,
+                        whitelist,
                     },
                     accept_eula,
                     &version,
@@ -112,6 +120,7 @@ async fn main() -> Result<()> {
             port,
             max_players,
             difficulty,
+            whitelist,
         } => {
             let settings = Settings {
                 name,
@@ -119,6 +128,7 @@ async fn main() -> Result<()> {
                 port,
                 max_players,
                 difficulty: difficulty.into(),
+                whitelist,
             };
             let server =
                 tokio::task::spawn_blocking(move || manager.update_settings(&id, settings))

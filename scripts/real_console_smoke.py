@@ -13,9 +13,10 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--source-data',required=True,type=Path)
     parser.add_argument('--server-id',required=True)
+    parser.add_argument('--whitelist',action='store_true')
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
-    binary=root/'target/debug/examples/console_smoke'
+    binary=root/'target/debug/examples'/('whitelist_smoke' if args.whitelist else 'console_smoke')
     with (args.source_data/'servers'/args.server_id/'process.lock').open('r+b') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix='blockops-console-smoke-') as directory:

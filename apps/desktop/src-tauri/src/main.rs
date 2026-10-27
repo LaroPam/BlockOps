@@ -226,6 +226,7 @@ fn main() {
             servers::start_server,
             servers::stop_server,
             servers::send_console,
+            servers::whitelist_player,
             servers::invite_server
         ])
         .run(tauri::generate_context!())
