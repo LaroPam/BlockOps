@@ -81,7 +81,7 @@ def main():
             replay = launch('blockops-coordination', 'join', '--coordinator', address,
                             '--code-file', str(path), '--bind', '127.0.0.1:0')
             assert replay.wait(timeout=15) != 0, 'Code was reused'
-        print('PASS: short code → identity binding → relay → ' +
+        print('PASS: short code -> identity binding -> relay -> ' +
               ('Minecraft status/ping' if args.minecraft_port else 'binary TCP echo') + '; replay rejected')
     finally:
         watchdog.cancel()
