@@ -340,6 +340,9 @@ pub fn extract(data: &[u8], root: &Path, is_zip: bool) -> Result<()> {
                 ensure!(entry.unpack_in(root)?, "Unsafe TAR path");
             }
         }
+        #[cfg(not(unix))]
+        ensure!(links.is_empty(), "TAR links unsupported on this platform");
+        #[cfg(unix)]
         for (dest, target) in links {
             let resolved = dest
                 .parent()
@@ -350,10 +353,7 @@ pub fn extract(data: &[u8], root: &Path, is_zip: bool) -> Result<()> {
                 resolved.starts_with(root.canonicalize()?),
                 "Archive link escapes destination"
             );
-            #[cfg(unix)]
             std::os::unix::fs::symlink(target, dest)?;
-            #[cfg(not(unix))]
-            bail!("TAR links unsupported on this platform");
         }
     }
     Ok(())
