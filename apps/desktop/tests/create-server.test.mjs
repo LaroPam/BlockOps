@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const desktopDir = fileURLToPath(new URL('..', import.meta.url));
 const vite = fileURLToPath(new URL('../../../node_modules/vite/bin/vite.js', import.meta.url));
 
-test('creation sends the selected game mode and PvP settings to Tauri', { timeout: 60_000 }, async () => {
+test('server settings and an existing LAN world port are sent to Tauri', { timeout: 60_000 }, async () => {
   const probe = createServer();
   await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(0, '127.0.0.1', resolve); });
   const port = probe.address().port;
@@ -36,7 +36,8 @@ test('creation sends the selected game mode and PvP settings to Tauri', { timeou
         }};
       });
       await page.goto(baseUrl);
-      await page.getByRole('button', { name: /Создать сервер/ }).first().click();
+      await page.getByText('Отдельные серверы BlockOps', { exact: true }).click();
+      await page.getByRole('button', { name: '＋ Создать новый сервер' }).click();
       const form = page.locator('form.create-card');
       const submit = form.getByRole('button', { name: 'Создать сервер', exact: true });
       assert.equal(await submit.isDisabled(), true);
@@ -53,6 +54,34 @@ test('creation sends the selected game mode and PvP settings to Tauri', { timeou
       assert.equal(request.version, '1.21.1');
       await page.close();
     }
+    // The main host flow must use only the Minecraft port and bind the tunnel
+    // target to this computer; creating a server or accepting an EULA is not involved.
+    const lan = await browser.newPage();
+    await lan.addInitScript(() => {
+      window.__calls = [];
+      let session = null;
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'host') {
+          window.__calls.push(args);
+          session = { mode: 'host', endpoint: null, active_connections: 0, last_error: null, transport: null };
+          return session;
+        }
+        if (command === 'status') return session;
+        if (command === 'servers' || command === 'codes') return [];
+        return null;
+      }};
+    });
+    await lan.goto(baseUrl);
+    const portInput = lan.getByLabel('Порт мира Minecraft');
+    assert.equal(await portInput.inputValue(), '');
+    await portInput.fill('54321');
+    await lan.getByRole('button', { name: 'Подготовить приглашение' }).click();
+    await lan.waitForFunction(() => window.__calls.length === 1);
+    const [hostArgs] = await lan.evaluate(() => window.__calls);
+    assert.equal(hostArgs.target, '127.0.0.1:54321');
+    assert.equal(hostArgs.relay, null);
+    await lan.getByRole('button', { name: 'Создать одноразовый код' }).waitFor();
+    await lan.close();
   } finally {
     if (browser) await browser.close();
     server.kill();
