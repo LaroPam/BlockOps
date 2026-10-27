@@ -103,8 +103,8 @@ function App() {
     {needsPublicServices && <p className="notice">Для игры через интернет пока нужны отдельно развёрнутые сервисы. Их адреса можно указать в дополнительных настройках. Локальная проверка доступна на одном компьютере.</p>}
 
     <div className="workspace"><div className="workspace-main">
-    {mode === 'host' ? <Servers desktop={desktop} relay={relay} createSignal={createSignal} onInvite={() => void refreshSession()}/> :
-      !session && <form className="card join-card" onSubmit={join}>
+    <div hidden={mode !== 'host'}><Servers desktop={desktop} relay={relay} createSignal={createSignal} onInvite={() => void refreshSession()}/></div>
+    {mode === 'join' && !session && <form className="card join-card" onSubmit={join}>
 
         <h2>Войдите в мир друга</h2>
         <p>Попросите друга создать приглашение и передать вам код.</p>

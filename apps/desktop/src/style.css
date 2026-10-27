@@ -161,3 +161,21 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .guide li strong { font-size: 13px; }
 .guide li span { color: var(--muted); font-size: 13px; line-height: 1.5; margin-top: 4px; }
 @media (max-width: 780px) { .workspace { grid-template-columns: minmax(0, 1fr); gap: 24px; } }
+
+/* Server setup and lifecycle */
+.create-card h3 { margin: 0; }
+.create-heading p { margin: 8px 0 0; }
+.create-card fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.create-advanced { margin-top: 20px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.create-advanced summary { padding: 16px 0; }
+.create-advanced[open] { padding-bottom: 16px; }
+.server-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.server-heading p { margin: 8px 0 18px; }
+.server-status { flex: none; max-width: 55%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.status-running { color: var(--accent); border-color: #526f48; }
+.status-failed { color: var(--danger); border-color: #80524d; }
+.server-notice { padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--text); }
+.action-error strong { display: block; font-size: 14px; line-height: 1.5; }
+.action-error summary { color: var(--danger); padding: 12px 0 0; }
+.action-error code { color: var(--danger); margin-top: 10px; white-space: pre-wrap; }
+@media (max-width: 460px) { .server-heading { flex-direction: column; } .server-status { max-width: 100%; } }
