@@ -13,7 +13,21 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (Linux)
+        if: runner.os != 'Windows'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | Tee-Object -Variable clippyOutput | Out-Host
+          $result = $LASTEXITCODE
+          if ($result -ne 0) {
+            $detail = (($clippyOutput | Select-Object -Last 80) -join "`n").Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+            Write-Output "::error title=Windows Clippy::$detail"
+            exit $result
+          }
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
       - run: python scripts/coordination_smoke.py
