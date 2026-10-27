@@ -39,7 +39,7 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
   async function action(command:string,args:Record<string,unknown>={}) {
     setBusy(true);setError(null);setNotice('');try{await invoke(command,args);if(command==='invite_server')onInvite();try{await refresh();}catch{/* Keep a successful operation successful; the list has its own error. */}return true;}catch(e){setError({message:String(e),id:typeof args.id==='string'?args.id:null});return false;}finally{setBusy(false);}
   }
-  async function create(e:FormEvent){e.preventDefault();setCreating(true);const ok=await action('create_server',{settings:{name,memory_mb:memory,port,max_players:players,difficulty,whitelist},acceptEula:accepted,version});setCreating(false);if(ok){setAccepted(false);setCreateOpen(false);setNotice('Сервер создан. Запустите его, чтобы подготовить мир.');}}
+  async function create(e:FormEvent){e.preventDefault();setCreating(true);const ok=await action('create_server',{settings:{name,memory_mb:memory,port,max_players:players,difficulty,whitelist,game_mode:gameMode,pvp},acceptEula:accepted,version});setCreating(false);if(ok){setAccepted(false);setCreateOpen(false);setNotice('Сервер создан. Запустите его, чтобы подготовить мир.');}}
   return <section className="servers"><h2>Ваши серверы</h2><p>Vanilla с Java 21. Каждый мир хранится отдельно.</p>
     {!desktop ? <p>Список серверов доступен в приложении.</p> : !loaded ? <p>Загружаем список серверов…</p> : listError ? <p role="alert" className="error">Не удалось получить список серверов: {listError}</p> : rows.length===0 && <p>У вас пока нет серверов. Создайте первый мир.</p>}
     {notice && <p className="server-notice" role="status">{notice}</p>}

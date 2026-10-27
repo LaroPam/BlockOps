@@ -35,7 +35,7 @@ npm run desktop
 
 For a Windows installer: `npm run tauri -w apps/desktop -- build`. This targets NSIS;
 code signing and release distribution are not configured. Do not distribute this PoC as a
-finished hosting product. The CI Windows job is configured to build an unsigned NSIS installer and smoke-test installation and removal; it has not yet been run.
+finished hosting product. The Windows CI job builds an unsigned NSIS installer and smoke-tests installation and removal. It does not exercise the native GUI or a real Minecraft session.
 
 ## Manual three-process tunnel
 
@@ -101,3 +101,10 @@ cd /workspace/BlockOps
 Use the existing checkout; cloud tasks are already isolated. Do not create a Git worktree
 unless explicitly requested. No service must be running for `cargo test`: tests own their
 listeners and relay subprocesses and clean them up.
+
+## UI checks
+
+`npx playwright install chromium` downloads a browser for the checks. Run
+`npm run test:ui -w apps/desktop` to exercise the creation form and its Tauri
+command arguments with a mocked backend. The check does not install Minecraft or
+accept the EULA for a real server. Windows CI runs this check before packaging.
