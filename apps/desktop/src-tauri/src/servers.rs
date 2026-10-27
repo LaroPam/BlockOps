@@ -1,5 +1,6 @@
 use blockops_server_manager::{
     process::{Process, ProcessStatus},
+    stop_states::StopStates,
     Manager, Server, Settings,
 };
 use serde::Serialize;
@@ -10,7 +11,7 @@ use tokio::sync::Mutex;
 pub struct Servers {
     pub manager: Manager,
     pub processes: Mutex<HashMap<String, Process>>,
-    pub stopping: Mutex<HashMap<String, tokio::sync::watch::Receiver<ProcessStatus>>>,
+    pub stopping: Mutex<StopStates>,
     pub installing: Mutex<()>,
     // Owned by the blocking task until disk mutation finishes, even if IPC is cancelled.
     pub disk_operations: Arc<Mutex<()>>,
@@ -33,13 +34,7 @@ pub async fn servers(state: State<'_, Servers>) -> Result<Vec<ServerView>, Strin
             let process = processes
                 .get(&server.id)
                 .map(|p| p.status.borrow().clone())
-                .or_else(|| {
-                    stopping.get(&server.id).map(|status| {
-                        let mut status = status.borrow().clone();
-                        status.phase = "stopping".into();
-                        status
-                    })
-                });
+                .or_else(|| stopping.status(&server.id));
             ServerView { server, process }
         })
         .collect())
@@ -74,7 +69,7 @@ pub async fn start_server(
     if state.closing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("Приложение завершает работу".into());
     }
-    if state.stopping.lock().await.contains_key(&id) {
+    if state.stopping.lock().await.is_stopping(&id) {
         return Err("Дождитесь завершения остановки сервера".into());
     }
     if let Some(p) = processes.get(&id) {
@@ -83,7 +78,10 @@ pub async fn start_server(
         }
     }
     if let Some(old) = processes.remove(&id) {
+        let status = old.status.clone();
         old.stop().await;
+        let final_status = status.borrow().clone();
+        state.stopping.lock().await.finish(id.clone(), final_status);
     }
     let process = state
         .manager
@@ -113,6 +111,7 @@ pub async fn start_server(
             session.stop().await;
         }
     });
+    state.stopping.lock().await.clear(&id);
     processes.insert(id, process);
     Ok(())
 }
@@ -139,7 +138,7 @@ pub async fn stop_server(
         .stopping
         .lock()
         .await
-        .insert(id.clone(), process.status.clone());
+        .begin(id.clone(), process.status.clone());
     drop(processes);
     // Once removed from the process map, a detached task must retain both the process
     // and shutdown guard even if the window/IPC request disappears during world saving.
@@ -176,7 +175,12 @@ pub async fn stop_server(
         } else {
             None
         };
-        app.state::<Servers>().stopping.lock().await.remove(&id);
+        let final_status = status.borrow().clone();
+        app.state::<Servers>()
+            .stopping
+            .lock()
+            .await
+            .finish(id, final_status);
         if let Some(error) = failure {
             return Err(error);
         }

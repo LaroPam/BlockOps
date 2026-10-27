@@ -3,6 +3,7 @@ pub mod backups;
 pub mod java;
 pub mod process;
 mod settings_update;
+pub mod stop_states;
 pub mod whitelist;
 use anyhow::{ensure, Context, Result};
 use fs2::FileExt;

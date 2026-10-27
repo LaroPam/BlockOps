@@ -195,14 +195,14 @@ mod supervisor {
         );
         let mut status = process.status.clone();
         phase(&mut status, "running").await;
+        let mut history = blockops_server_manager::stop_states::StopStates::default();
+        history.begin("server".into(), status.clone());
         process.stop().await;
-        assert_eq!(status.borrow().phase, "failed");
-        assert!(status
-            .borrow()
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("timed out"));
+        history.finish("server".into(), status.borrow().clone());
+        let result = history.status("server").unwrap();
+        assert_eq!(result.phase, "failed");
+        assert!(result.error.unwrap().contains("timed out"));
+        assert!(result.logs.iter().any(|line| line.contains("Done (")));
     }
     #[tokio::test]
     async fn output_retention_is_bounded() {
