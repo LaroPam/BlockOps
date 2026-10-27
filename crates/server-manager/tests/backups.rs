@@ -32,6 +32,8 @@ fn fixture() -> Fixture {
             max_players: 10,
             difficulty: Difficulty::Normal,
             whitelist: false,
+            game_mode: None,
+            pvp: None,
         },
         version: artifacts::VERSION.into(),
         jar_sha1: "00".repeat(20),
