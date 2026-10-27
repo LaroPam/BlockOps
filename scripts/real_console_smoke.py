@@ -1,6 +1,7 @@
 """Run a benign console command against a temporary copy of a stopped test server (Linux)."""
 import argparse
 import fcntl
+import json
 from pathlib import Path
 import os
 import shutil
@@ -22,6 +23,12 @@ def main():
         with tempfile.TemporaryDirectory(prefix='blockops-console-smoke-') as directory:
             copy=Path(directory)/'data'
             shutil.copytree(args.source_data,copy,symlinks=True)
+            if args.whitelist:
+                # A fixture exists only in this disposable copy; no real account is needed.
+                cache = copy / 'servers' / args.server_id / 'usercache.json'
+                cache.write_text(json.dumps([{'name': 'BlockOpsTest',
+                    'uuid': '8bcb7d70-1f9f-48e3-b6ef-6f6d0fc55ee3',
+                    'expiresOn': '2038-01-01 00:00:00 +0000'}]))
             child=subprocess.Popen([str(binary),str(copy),args.server_id],stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE,text=True,start_new_session=True)
             try:

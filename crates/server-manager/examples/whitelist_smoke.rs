@@ -54,6 +54,33 @@ async fn main() -> Result<()> {
             }
         })
         .await??;
+        for (action, expected) in [
+            (Action::Add, "Added BlockOpsTest to the whitelist"),
+            (Action::Remove, "Removed BlockOpsTest from the whitelist"),
+        ] {
+            process
+                .console()
+                .send(&whitelist::command(action, Some("BlockOpsTest"))?)
+                .await?;
+            tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if status
+                        .borrow()
+                        .logs
+                        .iter()
+                        .any(|line| line.contains(expected))
+                    {
+                        break Ok(());
+                    }
+                    ensure!(
+                        status.borrow().phase == "running",
+                        "Minecraft exited before command result"
+                    );
+                    status.changed().await?;
+                }
+            })
+            .await??;
+        }
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -63,6 +90,6 @@ async fn main() -> Result<()> {
         status.borrow().phase == "stopped",
         "Minecraft did not stop cleanly"
     );
-    println!("PASS: whitelist enabled, Minecraft responded to whitelist list, and stopped cleanly");
+    println!("PASS: whitelist enabled, list/add/remove responses verified, and Minecraft stopped cleanly");
     Ok(())
 }
