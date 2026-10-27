@@ -4,7 +4,7 @@ import { Backups } from './Backups';
 import { EditSettings } from './EditSettings';
 import { Console } from './Console';
 import { Whitelist } from './Whitelist';
-type Server = {id:string; version:string; settings:{name:string;memory_mb:number;port:number;difficulty:string;max_players:number;whitelist:boolean}};
+type Server = {id:string; version:string; settings:{name:string;memory_mb:number;port:number;difficulty:string;max_players:number;whitelist:boolean;game_mode:string|null;pvp:boolean|null}};
 type Row = {server:Server;process:null|{phase:string;logs:string[];error:string|null;exit_code:number|null}};
 const phases:Record<string,string>={starting:'Запускается',running:'Работает',stopping:'Сохраняется и останавливается',stopped:'Остановлен',failed:'Ошибка запуска или работы'};
 function errorHint(message:string):string {
@@ -27,6 +27,7 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
   const [name,setName]=useState('Мой мир'); const [memory,setMemory]=useState(2048);
   const [port,setPort]=useState(25565); const [players,setPlayers]=useState(10);
   const [whitelist,setWhitelist]=useState(false);
+  const [gameMode,setGameMode]=useState('survival'); const [pvp,setPvp]=useState(true);
   const [difficulty,setDifficulty]=useState('normal'); const [accepted,setAccepted]=useState(false);
   const [error,setError]=useState<{message:string;id:string|null}|null>(null); const [busy,setBusy]=useState(false);
   const [notice,setNotice]=useState(''); const requestSequence=useRef(0); const lastApplied=useRef(0);
@@ -67,6 +68,8 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
       <div><label htmlFor="port">Локальный порт</label><input id="port" type="number" min={1024} max={65535} required value={port} onChange={e=>setPort(Number(e.target.value))}/></div>
       <div><label htmlFor="players">Максимум игроков</label><input id="players" type="number" min={1} max={100} required value={players} onChange={e=>setPlayers(Number(e.target.value))}/></div>
       <div><label htmlFor="difficulty">Сложность</label><select id="difficulty" value={difficulty} onChange={e=>setDifficulty(e.target.value)}><option value="peaceful">Мирная</option><option value="easy">Лёгкая</option><option value="normal">Обычная</option><option value="hard">Сложная</option></select></div></div>
+      <label htmlFor="game-mode">Режим игры для новых игроков</label><select id="game-mode" value={gameMode} onChange={e=>setGameMode(e.target.value)}><option value="survival">Выживание</option><option value="creative">Творческий</option><option value="adventure">Приключение</option><option value="spectator">Наблюдение</option></select>
+      <label className="checkbox"><input type="checkbox" checked={pvp} onChange={e=>setPvp(e.target.checked)}/> Игроки могут наносить урон друг другу (PvP)</label>
       <label className="checkbox"><input type="checkbox" checked={whitelist} onChange={e=>setWhitelist(e.target.checked)}/> Разрешать вход только игрокам из списка допуска</label>
       {whitelist && <p>После запуска добавьте имена игроков в список допуска. Пока он пуст, обычные игроки не смогут войти.</p>}
       </details>

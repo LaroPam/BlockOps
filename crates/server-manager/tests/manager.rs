@@ -8,6 +8,8 @@ fn settings() -> Settings {
         max_players: 10,
         difficulty: Difficulty::Normal,
         whitelist: false,
+        game_mode: None,
+        pvp: None,
     }
 }
 #[tokio::test]
@@ -393,6 +395,8 @@ fn old_settings_deserialize_with_whitelist_disabled() {
     let old = serde_json::json!({"name":"World","memory_mb":2048,"port":25565,"max_players":10,"difficulty":"normal"});
     let mut settings: Settings = serde_json::from_value(old).unwrap();
     assert!(!settings.whitelist);
+    assert!(settings.game_mode.is_none());
+    assert!(settings.pvp.is_none());
     assert!(settings
         .properties()
         .unwrap()

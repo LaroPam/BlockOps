@@ -53,6 +53,16 @@ fn merge_properties(actual: &str, settings: &Settings) -> Result<String> {
         result.push_str(line);
         result.push('\n');
     }
+    // New managed keys may not exist on servers created by older versions.
+    for (key, value) in &managed {
+        if !result.lines().any(|line| {
+            line.trim()
+                .split_once('=')
+                .is_some_and(|(k, _)| k.trim() == *key)
+        }) {
+            result.push_str(&format!("{key}={value}\n"));
+        }
+    }
     ensure!(
         properties_match(&result, &expected)?,
         "Unable to update managed properties safely"
@@ -192,6 +202,8 @@ mod tests {
             max_players: 10,
             difficulty: Difficulty::Normal,
             whitelist: false,
+            game_mode: None,
+            pvp: None,
         }
     }
     fn fixture() -> (tempfile::TempDir, Manager, Server) {
@@ -232,6 +244,8 @@ mod tests {
             max_players: 15,
             difficulty: Difficulty::Hard,
             whitelist: true,
+            game_mode: Some(crate::GameMode::Creative),
+            pvp: Some(false),
         }
     }
     #[test]
@@ -253,7 +267,28 @@ mod tests {
         assert!(properties.contains("server-ip=127.0.0.1\n"));
         assert!(properties.contains("difficulty=hard\n"));
         assert!(properties.contains("white-list=true\n"));
+        assert!(properties.contains("gamemode=creative\n"));
+        assert!(properties.contains("pvp=false\n"));
         assert!(properties_match(&properties, &updated.settings.properties().unwrap()).unwrap());
+    }
+    #[test]
+    fn legacy_unmanaged_values_are_preserved_until_explicitly_changed() {
+        let (root, manager, server) = fixture();
+        let dir = root.path().join("servers").join(&server.id);
+        let mut original = std::fs::read_to_string(dir.join("server.properties")).unwrap();
+        original.push_str("gamemode=adventure\npvp=false\n");
+        std::fs::write(dir.join("server.properties"), &original).unwrap();
+        let mut update = changed();
+        update.game_mode = None;
+        update.pvp = None;
+        manager.update_settings(&server.id, update).unwrap();
+        let saved = std::fs::read_to_string(dir.join("server.properties")).unwrap();
+        assert!(saved.contains("gamemode=adventure\n"));
+        assert!(saved.contains("pvp=false\n"));
+        manager.update_settings(&server.id, changed()).unwrap();
+        let saved = std::fs::read_to_string(dir.join("server.properties")).unwrap();
+        assert!(saved.contains("gamemode=creative\n"));
+        assert!(saved.contains("pvp=false\n"));
     }
     #[test]
     fn running_lock_and_unsafe_properties_prevent_edit() {

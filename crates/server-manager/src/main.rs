@@ -1,5 +1,5 @@
 use anyhow::Result;
-use blockops_server_manager::{Difficulty, Manager, Settings};
+use blockops_server_manager::{Difficulty, GameMode, Manager, Settings};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 #[derive(Parser)]
@@ -26,6 +26,23 @@ impl From<DifficultyArg> for Difficulty {
         }
     }
 }
+#[derive(Clone, ValueEnum)]
+enum GameModeArg {
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
+}
+impl From<GameModeArg> for GameMode {
+    fn from(value: GameModeArg) -> Self {
+        match value {
+            GameModeArg::Survival => Self::Survival,
+            GameModeArg::Creative => Self::Creative,
+            GameModeArg::Adventure => Self::Adventure,
+            GameModeArg::Spectator => Self::Spectator,
+        }
+    }
+}
 #[derive(Subcommand)]
 enum Action {
     List,
@@ -40,6 +57,10 @@ enum Action {
         /// Enable whitelist before first start.
         #[arg(long)]
         whitelist: bool,
+        #[arg(long, value_enum, default_value = "survival")]
+        game_mode: GameModeArg,
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        pvp: bool,
         #[arg(long, default_value_t = 2048)]
         memory_mb: u32,
         #[arg(long, default_value_t = 25565)]
@@ -64,6 +85,10 @@ enum Action {
         /// Whether to enable the Minecraft whitelist.
         #[arg(long, action = clap::ArgAction::Set)]
         whitelist: bool,
+        #[arg(long, value_enum)]
+        game_mode: GameModeArg,
+        #[arg(long, action = clap::ArgAction::Set)]
+        pvp: bool,
     },
     /// Create a backup of a stopped server's world.
     Backup {
@@ -94,6 +119,8 @@ async fn main() -> Result<()> {
             accept_eula,
             version,
             whitelist,
+            game_mode,
+            pvp,
             memory_mb,
             port,
         } => {
@@ -106,6 +133,8 @@ async fn main() -> Result<()> {
                         max_players: 10,
                         difficulty: Difficulty::Normal,
                         whitelist,
+                        game_mode: Some(game_mode.into()),
+                        pvp: Some(pvp),
                     },
                     accept_eula,
                     &version,
@@ -121,6 +150,8 @@ async fn main() -> Result<()> {
             max_players,
             difficulty,
             whitelist,
+            game_mode,
+            pvp,
         } => {
             let settings = Settings {
                 name,
@@ -129,6 +160,8 @@ async fn main() -> Result<()> {
                 max_players,
                 difficulty: difficulty.into(),
                 whitelist,
+                game_mode: Some(game_mode.into()),
+                pvp: Some(pvp),
             };
             let server =
                 tokio::task::spawn_blocking(move || manager.update_settings(&id, settings))

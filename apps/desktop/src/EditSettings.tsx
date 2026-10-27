@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
-type Settings = { name: string; memory_mb: number; port: number; max_players: number; difficulty: string; whitelist: boolean };
+type Settings = { name: string; memory_mb: number; port: number; max_players: number; difficulty: string; whitelist: boolean; game_mode: string | null; pvp: boolean | null };
 type Server = { id: string; settings: Settings };
 
 /** The backend locks the server and validates all changes before writing them. */
@@ -48,6 +48,17 @@ export function EditSettings({ server, running, desktop, onSaved }: {
           <option value="normal">Обычная</option><option value="hard">Сложная</option>
         </select></div>
     </div>
+    <label htmlFor={`edit-mode-${server.id}`}>Режим игры для новых игроков</label>
+    <select id={`edit-mode-${server.id}`} value={draft.game_mode ?? ''} onChange={e => setDraft({ ...draft, game_mode: e.target.value || null })}>
+      {server.settings.game_mode === null && <option value="">Оставить текущую настройку Minecraft</option>}
+      <option value="survival">Выживание</option><option value="creative">Творческий</option><option value="adventure">Приключение</option><option value="spectator">Наблюдение</option>
+    </select>
+    <label htmlFor={`edit-pvp-${server.id}`}>Урон между игроками (PvP)</label>
+    <select id={`edit-pvp-${server.id}`} value={draft.pvp === null ? '' : String(draft.pvp)} onChange={e => setDraft({ ...draft, pvp: e.target.value === '' ? null : e.target.value === 'true' })}>
+      {server.settings.pvp === null && <option value="">Оставить текущую настройку Minecraft</option>}
+      <option value="true">Разрешён</option><option value="false">Выключен</option>
+    </select>
+    <p>Режим применяется к новым игрокам; существующий режим игрока может сохраниться.</p>
     <label className="checkbox"><input type="checkbox" checked={draft.whitelist} onChange={e => setDraft({ ...draft, whitelist: e.target.checked })}/> Разрешать вход только игрокам из списка допуска</label>
     {draft.whitelist && <p>Добавьте имена игроков после запуска. Пустой список не пропускает обычных игроков.</p>}
     {error && <p role="alert" className="error">{error}</p>}
