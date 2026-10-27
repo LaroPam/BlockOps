@@ -34,6 +34,25 @@ impl Difficulty {
         }
     }
 }
+/// None means the property was not managed by older BlockOps versions.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GameMode {
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
+}
+impl GameMode {
+    fn value(&self) -> &'static str {
+        match self {
+            Self::Survival => "survival",
+            Self::Creative => "creative",
+            Self::Adventure => "adventure",
+            Self::Spectator => "spectator",
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -44,6 +63,10 @@ pub struct Settings {
     pub difficulty: Difficulty,
     #[serde(default)]
     pub whitelist: bool,
+    #[serde(default)]
+    pub game_mode: Option<GameMode>,
+    #[serde(default)]
+    pub pvp: Option<bool>,
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
@@ -69,7 +92,14 @@ impl Settings {
     }
     pub fn properties(&self) -> Result<String> {
         self.validate()?;
-        Ok(format!("server-ip=127.0.0.1\nserver-port={}\nonline-mode=true\nenforce-secure-profile=true\nenable-rcon=false\nenable-query=false\nwhite-list={}\nlevel-name=world\nmotd=BlockOps Vanilla\ndifficulty={}\nmax-players={}\n",self.port,self.whitelist,self.difficulty.value(),self.max_players))
+        let mut properties = format!("server-ip=127.0.0.1\nserver-port={}\nonline-mode=true\nenforce-secure-profile=true\nenable-rcon=false\nenable-query=false\nwhite-list={}\nlevel-name=world\nmotd=BlockOps Vanilla\ndifficulty={}\nmax-players={}\n",self.port,self.whitelist,self.difficulty.value(),self.max_players);
+        if let Some(mode) = &self.game_mode {
+            properties.push_str(&format!("gamemode={}\n", mode.value()));
+        }
+        if let Some(pvp) = self.pvp {
+            properties.push_str(&format!("pvp={pvp}\n"));
+        }
+        Ok(properties)
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
