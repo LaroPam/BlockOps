@@ -7,6 +7,7 @@ an encrypted application-level TCP tunnel. **Iteration 3: Vanilla manager, ident
 - [Vanilla server installation, lifecycle and current limitations](docs/servers.md)
 - [Architecture, feasibility, trust boundaries and roadmap](docs/architecture.md)
 - [Local verification and Windows desktop](docs/development.md)
+- [Windows preview installation and test guide](docs/windows-test.md)
 - [Public relay deployment and traffic limits](docs/relay.md)
 
 ## Quick verification
@@ -55,8 +56,9 @@ remain bearer secrets and are intended only for PoC compatibility.
 The network core and an actual installed Vanilla server were tested in this cloud Linux instance.
 Minecraft status and ping/pong passed through the relay; authenticated player login is not
 verified because Vanilla authlib bypasses the required cloud HTTPS proxy and direct DNS fails. Desktop native compilation is
-blocked here by missing GLib/GTK/WebKit development libraries; Windows build and installer
-have not been executed here. CI definitions are provided, not claimed as executed.
+blocked in the Linux development container by missing GLib/GTK/WebKit development libraries.
+Windows CI builds an unsigned installer and tests silent installation and removal; interactive
+Windows GUI use and authenticated Minecraft player login still need manual validation.
 
 ## Stack decisions
 
