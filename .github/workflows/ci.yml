@@ -31,7 +31,21 @@ jobs:
           }
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
-      - run: python scripts/coordination_smoke.py
+      - name: Coordination smoke (Linux)
+        if: runner.os != 'Windows'
+        run: python scripts/coordination_smoke.py
+      - name: Coordination smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          python scripts/coordination_smoke.py 2>&1 | Tee-Object -Variable smokeOutput | Out-Host
+          $result = $LASTEXITCODE
+          if ($result -ne 0) {
+            $detail = (($smokeOutput | Select-Object -Last 80) -join "`n").Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+            Write-Output "::error title=Windows coordination smoke::$detail"
+            exit $result
+          }
       - name: HTTPS pilot smoke test
         if: runner.os == 'Linux'
         run: python scripts/https_pilot_smoke.py
