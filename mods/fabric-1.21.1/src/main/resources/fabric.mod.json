@@ -6,6 +6,7 @@
   "description": "Client-side companion for BlockOps, under development.",
   "environment": "client",
   "entrypoints": { "client": ["org.blockops.fabric.BlockOpsClient"] },
+  "mixins": [{ "config": "blockops.client.mixins.json", "environment": "client" }],
   "depends": {
     "fabricloader": ">=0.16.10",
     "minecraft": "=1.21.1",

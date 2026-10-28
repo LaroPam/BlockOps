@@ -19,13 +19,9 @@ async fn main() -> Result<()> {
     ensure!(args.next().is_none(), "Unexpected argument");
     let mut secret = String::new();
     io::stdin().lock().take(66).read_line(&mut secret)?;
-    let bytes = hex::decode(secret.trim())?;
-    let token: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Invalid capability"))?;
-    blockops_coordination::local_bridge::request_join(
-        bridge_port,
-        &token,
+    let code = format!("{bridge_port}:{}", secret.trim());
+    blockops_coordination::local_bridge::request_paired_join(
+        &code,
         SocketAddr::from((Ipv4Addr::LOCALHOST, target_port)),
     )
     .await

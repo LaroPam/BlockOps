@@ -34,3 +34,29 @@ pub async fn request_join(bridge_port: u16, token: &[u8; 32], endpoint: SocketAd
     );
     Ok(())
 }
+
+/// Parse a short-lived pairing code without including its secret in errors.
+pub async fn request_paired_join(code: &str, endpoint: SocketAddr) -> Result<()> {
+    let (port_text, token_text) = code
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("Invalid pairing code"))?;
+    ensure!(
+        !port_text.is_empty()
+            && port_text.len() <= 5
+            && port_text.bytes().all(|b| b.is_ascii_digit()),
+        "Invalid pairing code"
+    );
+    ensure!(
+        token_text.len() == 64 && token_text.bytes().all(|b| b.is_ascii_hexdigit()),
+        "Invalid pairing code"
+    );
+    let port: u16 = port_text
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid pairing code"))?;
+    let bytes = hex::decode(token_text).map_err(|_| anyhow::anyhow!("Invalid pairing code"))?;
+    let token: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid pairing code"))?;
+    request_join(port, &token, endpoint).await
+}

@@ -82,6 +82,26 @@ test('server settings, LAN port and Minecraft profile discovery' , { timeout: 60
     assert.equal(hostArgs.relay, null);
     await lan.getByRole('button', { name: 'Создать одноразовый код' }).waitFor();
     await lan.close();
+    const joinPage = await browser.newPage();
+    await joinPage.addInitScript(() => {
+      window.__calls = [];
+      const session = { mode: 'join', endpoint: '127.0.0.1:34567', active_connections: 0, last_error: null, transport: null };
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'status') return session;
+        if (command === 'join_in_minecraft') { window.__calls.push(args); return null; }
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await joinPage.goto(baseUrl);
+    const pairing = joinPage.getByLabel('Код сопряжения с Minecraft');
+    await pairing.fill('12345:' + 'a'.repeat(64));
+    await joinPage.getByRole('button', { name: 'Войти в мир', exact: true }).click();
+    await joinPage.getByText(/Minecraft начал попытку подключения/).waitFor();
+    const [joinArgs] = await joinPage.evaluate(() => window.__calls);
+    assert.deepEqual(joinArgs, { pairingCode: '12345:' + 'a'.repeat(64) });
+    assert.equal(await pairing.inputValue(), '');
+    await joinPage.close();
     const profiles = await browser.newPage();
     await profiles.addInitScript(() => {
       window.__calls = [];

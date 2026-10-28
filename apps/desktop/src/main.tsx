@@ -27,6 +27,8 @@ function App() {
   const [lanPort, setLanPort] = useState('');
   const [relay, setRelay] = useState('');
   const [invite, setInvite] = useState('');
+  const [pairingCode, setPairingCode] = useState('');
+  const [joinFeedback, setJoinFeedback] = useState('');
   const [coordinator, setCoordinator] = useState('http://127.0.0.1:8080');
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState('');
@@ -69,10 +71,22 @@ function App() {
     finally { setBusy(false); }
   }
 
+  async function joinMinecraft(e: React.FormEvent) {
+    e.preventDefault();
+    const code = pairingCode.trim();
+    if (!code) return;
+    setPairingCode(''); setBusy(true); setError(''); setJoinFeedback('');
+    try {
+      await invoke('join_in_minecraft', { pairingCode: code });
+      setJoinFeedback('Minecraft начал попытку подключения. Результат смотрите в игре.');
+    } catch (failure) { setError(String(failure)); }
+    finally { setBusy(false); }
+  }
+
   async function stop() {
     setBusy(true);
     setError('');
-    try { await invoke('stop'); setSession(null); }
+    try { await invoke('stop'); setSession(null); setPairingCode(''); setJoinFeedback(''); }
     catch (e) { setError(explainError(e)); }
     finally { setBusy(false); }
   }
@@ -139,6 +153,14 @@ function App() {
         <h2>Откройте Minecraft</h2>
         {session.endpoint && <><label>Адрес сервера для Minecraft</label><code className="endpoint">{session.endpoint}</code></>}
         <p>В Minecraft Java откройте «Сетевая игра», добавьте сервер и вставьте этот адрес. Доступность мира проверяется при подключении Minecraft.</p>
+        <form className="minecraft-join" onSubmit={joinMinecraft}>
+          <h3>Войти через мод BlockOps</h3>
+          <p>Для экспериментального мода Fabric 1.21.1: в главном меню Minecraft нажмите BlockOps, скопируйте код и вставьте его сюда. Код действует один раз — не передавайте его другим.</p>
+          <label htmlFor="pairing-code">Код сопряжения с Minecraft</label>
+          <input id="pairing-code" type="password" maxLength={70} autoComplete="off" spellCheck={false} value={pairingCode} onChange={e => setPairingCode(e.target.value)} disabled={busy}/>
+          <button className="primary" disabled={!desktop || busy || !pairingCode.trim()}>Войти в мир</button>
+          {joinFeedback && <p role="status">{joinFeedback}</p>}
+        </form>
       </>}
       {session.last_error && <p role="alert" className="error">{explainError(session.last_error)}</p>}
       <details><summary>Состояние соединения</summary>
