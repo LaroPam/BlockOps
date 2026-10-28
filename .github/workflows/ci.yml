@@ -81,3 +81,34 @@ jobs:
           name: blockops-windows-nsis
           path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
+  fabric-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mods/fabric-1.21.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build client mod
+        run: |
+          if ! ./gradlew --no-daemon build > /tmp/blockops-fabric-build.log 2>&1; then
+            tail -80 /tmp/blockops-fabric-build.log
+            detail=$(tail -40 /tmp/blockops-fabric-build.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Fabric build::$detail"
+            exit 1
+          fi
+          tail -40 /tmp/blockops-fabric-build.log
+      - name: Check packaged mod contents
+        run: |
+          jar tf build/libs/blockops-fabric-client-0.1.0.jar > /tmp/blockops-mod-files.txt
+          grep -Fx 'fabric.mod.json' /tmp/blockops-mod-files.txt
+          grep -Fx 'org/blockops/fabric/BlockOpsClient.class' /tmp/blockops-mod-files.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blockops-fabric-1.21.1-experimental
+          path: mods/fabric-1.21.1/build/libs/blockops-fabric-client-0.1.0.jar
+          if-no-files-found: error

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "blockops",
+  "version": "${version}",
+  "name": "BlockOps Client",
+  "description": "Client-side companion for BlockOps, under development.",
+  "environment": "client",
+  "entrypoints": { "client": ["org.blockops.fabric.BlockOpsClient"] },
+  "depends": {
+    "fabricloader": ">=0.16.10",
+    "minecraft": "=1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
