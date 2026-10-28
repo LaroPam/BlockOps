@@ -110,6 +110,11 @@ impl Drop for Session {
     }
 }
 impl Session {
+    /// Request immediate cancellation without waiting for task cleanup.
+    pub fn cancellation_handle(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
     pub fn issue_invite(&self) -> Result<(Invite, access::Grant)> {
         let access = self
             .access

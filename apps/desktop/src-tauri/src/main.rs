@@ -2,12 +2,24 @@
 mod servers;
 use blockops_tunnel::Session;
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Manager as _;
 use tauri::State;
 use tokio::sync::Mutex;
+static NEXT_WORLD: AtomicU64 = AtomicU64::new(1);
+struct WorldSlot {
+    id: u64,
+    watch: Option<blockops_coordination::local_bridge::WorldWatch>,
+}
+#[derive(Serialize)]
+struct WorldDetection {
+    id: u64,
+    port: u16,
+}
 struct AppState(
     Mutex<Option<(String, Session, Option<String>)>>,
     Mutex<Vec<blockops_coordination::client::HostedInvite>>,
+    Mutex<Option<WorldSlot>>,
 );
 #[derive(Serialize)]
 struct View {
@@ -34,31 +46,78 @@ async fn host(
     state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
+    world_watch_id: Option<u64>,
 ) -> Result<View, String> {
-    make_host(state, target, relay, None).await
+    make_host(state, target, relay, None, world_watch_id).await
 }
 async fn make_host(
     state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
     owner: Option<String>,
+    world_watch_id: Option<u64>,
 ) -> Result<View, String> {
     let mut guard = state.0.lock().await;
     if guard.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
-    let target = target
+    let target: std::net::SocketAddr = target
         .parse()
         .map_err(|_| "Укажите loopback IP и порт, например 127.0.0.1:25565")?;
     let relay = relay
         .map(|r| r.parse())
         .transpose()
         .map_err(|_| "Некорректный multiaddr relay")?;
+    let mut worlds = state.2.lock().await;
+    if let Some(id) = world_watch_id {
+        let slot = worlds
+            .as_ref()
+            .filter(|slot| slot.id == id)
+            .ok_or("Мир больше не отслеживается; определите порт заново")?;
+        let watch = slot
+            .watch
+            .as_ref()
+            .ok_or("Мир закрыт или связь с модом потеряна")?;
+        if !*watch.alive.borrow()
+            || target != std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, watch.port))
+        {
+            return Err("Мир закрыт или его порт изменился; определите порт заново".into());
+        }
+    } else {
+        worlds.take();
+    }
     let session =
         blockops_tunnel::host_controlled(target, relay, std::time::Duration::from_secs(3600))
             .await
             .map_err(|e| e.to_string())?;
+    if let Some(id) = world_watch_id {
+        if !worlds
+            .as_ref()
+            .filter(|slot| slot.id == id)
+            .and_then(|slot| slot.watch.as_ref())
+            .is_some_and(|watch| *watch.alive.borrow())
+        {
+            session.stop().await;
+            return Err("Мир закрылся до создания соединения".into());
+        }
+    }
+    if let Some(id) = world_watch_id {
+        if let Some(watch) = worlds
+            .as_ref()
+            .filter(|slot| slot.id == id)
+            .and_then(|slot| slot.watch.as_ref())
+        {
+            // This independent task cancels the tunnel even if the UI/session lock is busy.
+            drop(blockops_coordination::local_bridge::cancel_on_world_loss(
+                watch.alive.clone(),
+                session.cancellation_handle(),
+            ));
+        }
+    }
     let result = view("host", &session);
+    let owner = world_watch_id
+        .map(|id| format!("world-watch:{id}"))
+        .or(owner);
     *guard = Some(("host".into(), session, owner));
     Ok(result)
 }
@@ -71,6 +130,7 @@ async fn join(state: State<'_, AppState>, invite: String) -> Result<View, String
     if guard.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
+    state.2.lock().await.take();
     let invite = serde_json::from_str(&invite).map_err(|_| "Некорректный формат приглашения")?;
     let session = blockops_tunnel::join(invite, "127.0.0.1:0".parse().unwrap())
         .await
@@ -86,6 +146,7 @@ async fn status(state: State<'_, AppState>) -> Result<Option<View>, String> {
 #[tauri::command]
 async fn stop(state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.0.lock().await;
+    state.2.lock().await.take();
     let codes = std::mem::take(&mut *state.1.lock().await);
     drop(codes);
     if let Some((_, session, _)) = guard.take() {
@@ -145,6 +206,7 @@ async fn join_code(
     if guard.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
+    state.2.lock().await.take();
     let session = blockops_coordination::client::Client::new(&coordinator)
         .map_err(|e| e.to_string())?
         .join(&code, "127.0.0.1:0".parse().unwrap())
@@ -177,8 +239,9 @@ async fn join_in_minecraft(state: State<'_, AppState>, pairing_code: String) -> 
 #[tauri::command]
 async fn detect_open_world(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     pairing_code: String,
-) -> Result<u16, String> {
+) -> Result<WorldDetection, String> {
     if pairing_code.len() > 80 {
         return Err("Некорректный код сопряжения".into());
     }
@@ -186,12 +249,66 @@ async fn detect_open_world(
     if guard.is_some() {
         return Err("Сначала отключите текущее соединение".into());
     }
-    blockops_coordination::local_bridge::request_world_port(&pairing_code)
+    let watch = blockops_coordination::local_bridge::watch_world(&pairing_code)
         .await
         .map_err(|_| {
             "Не удалось определить порт. Откройте мир для сети и получите новый код мода."
                 .to_owned()
-        })
+        })?;
+    let id = NEXT_WORLD.fetch_add(1, Ordering::Relaxed);
+    let port = watch.port;
+    let mut alive = watch.alive.clone();
+    *state.2.lock().await = Some(WorldSlot {
+        id,
+        watch: Some(watch),
+    });
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if !*alive.borrow() || alive.changed().await.is_err() {
+                break;
+            }
+        }
+        let state = app.state::<AppState>();
+        {
+            let mut worlds = state.2.lock().await;
+            let Some(slot) = worlds.as_mut().filter(|slot| slot.id == id) else {
+                return;
+            };
+            slot.watch.take();
+        }
+        let mut active = state.0.lock().await;
+        let worlds = state.2.lock().await;
+        if !worlds.as_ref().is_some_and(|slot| slot.id == id) {
+            return;
+        }
+        let owner = format!("world-watch:{id}");
+        let is_owner =
+            active.as_ref().and_then(|(_, _, owner)| owner.as_deref()) == Some(owner.as_str());
+        let session = if is_owner {
+            state.1.lock().await.clear();
+            active.take().map(|(_, session, _)| session)
+        } else {
+            None
+        };
+        drop(worlds);
+        drop(active);
+        if let Some(session) = session {
+            session.stop().await;
+        }
+    });
+    Ok(WorldDetection { id, port })
+}
+
+#[tauri::command]
+async fn world_watch_alive(state: State<'_, AppState>, id: u64) -> Result<bool, String> {
+    Ok(state
+        .2
+        .lock()
+        .await
+        .as_ref()
+        .filter(|slot| slot.id == id)
+        .and_then(|slot| slot.watch.as_ref())
+        .is_some_and(|watch| *watch.alive.borrow()))
 }
 
 #[tauri::command]
@@ -249,7 +366,11 @@ fn open_eula(app: tauri::AppHandle) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState(Mutex::new(None), Mutex::new(Vec::new())))
+        .manage(AppState(
+            Mutex::new(None),
+            Mutex::new(Vec::new()),
+            Mutex::new(None),
+        ))
         .setup(|app| {
             let manager = blockops_server_manager::Manager::open(app.path().app_data_dir()?)?;
             app.manage(servers::Servers {
@@ -298,6 +419,7 @@ fn main() {
             join_code,
             join_in_minecraft,
             detect_open_world,
+            world_watch_alive,
             open_eula,
             discover_minecraft_profiles,
             get_minecraft_selection,

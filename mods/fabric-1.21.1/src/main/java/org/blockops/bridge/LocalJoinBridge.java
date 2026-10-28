@@ -13,6 +13,7 @@ import java.util.HexFormat;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -25,6 +26,7 @@ public final class LocalJoinBridge implements AutoCloseable {
     private final HttpServer server;
     private final ThreadPoolExecutor worker;
     private final ScheduledExecutorService expiry;
+    private ScheduledFuture<?> expiryTask;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final byte[] token;
     private final long startedNanos;
@@ -74,8 +76,9 @@ public final class LocalJoinBridge implements AutoCloseable {
         server.setExecutor(worker);
         server.createContext("/v1/join", this::handle);
         server.createContext("/v1/world", this::handle);
+        server.createContext("/v1/watch-world", this::handle);
         server.start();
-        expiry.schedule(this::close, lifetime.toNanos(), TimeUnit.NANOSECONDS);
+        expiryTask = expiry.schedule(this::close, lifetime.toNanos(), TimeUnit.NANOSECONDS);
     }
 
     public int port() { return server.getAddress().getPort(); }
@@ -84,10 +87,11 @@ public final class LocalJoinBridge implements AutoCloseable {
     public String token() { return new String(token, StandardCharsets.US_ASCII); }
 
     private void handle(HttpExchange exchange) throws IOException {
+        boolean watching = false;
         try {
             String path = exchange.getRequestURI().getRawPath();
             if (!"POST".equals(exchange.getRequestMethod())
-                    || !("/v1/join".equals(path) || "/v1/world".equals(path))
+                    || !("/v1/join".equals(path) || "/v1/world".equals(path) || "/v1/watch-world".equals(path))
                     || exchange.getRequestURI().getRawQuery() != null
                     || exchange.getRequestHeaders().containsKey("Origin")
                     || exchange.getRequestHeaders().containsKey("Transfer-Encoding")
@@ -102,6 +106,30 @@ public final class LocalJoinBridge implements AutoCloseable {
             if (candidate.length != token.length || !MessageDigest.isEqual(token, candidate)
                     || ticker.getAsLong() - startedNanos >= lifetimeNanos || used.get()) {
                 respond(exchange, 403);
+                return;
+            }
+            if ("/v1/watch-world".equals(path)) {
+                if (!used.compareAndSet(false, true)) { respond(exchange, 403); return; }
+                int port = onWorld.getAsInt();
+                if (port < 1 || port > 65535 || !extendForWatch()) { respond(exchange, 409); return; }
+                watching = true;
+                exchange.getResponseHeaders().set("Cache-Control", "no-store");
+                exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=us-ascii");
+                exchange.sendResponseHeaders(200, 0); // chunked stream
+                var out = exchange.getResponseBody();
+                out.write(("W " + port + "\n").getBytes(StandardCharsets.US_ASCII));
+                out.flush();
+                while (!closed.get()) {
+                    try { Thread.sleep(1000); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return; }
+                    if (onWorld.getAsInt() != port) {
+                        out.write("C\n".getBytes(StandardCharsets.US_ASCII));
+                        out.flush();
+                        return;
+                    }
+                    out.write("A\n".getBytes(StandardCharsets.US_ASCII));
+                    out.flush();
+                }
                 return;
             }
             if ("/v1/world".equals(path)) {
@@ -125,7 +153,14 @@ public final class LocalJoinBridge implements AutoCloseable {
             respond(exchange, onJoin.test(port) ? 202 : 409);
         } finally {
             exchange.close();
+            if (watching) close();
         }
+    }
+
+    private synchronized boolean extendForWatch() {
+        if (closed.get() || !expiryTask.cancel(false)) return false;
+        expiryTask = expiry.schedule(this::close, 12, TimeUnit.HOURS);
+        return true;
     }
 
     private static void respond(HttpExchange exchange, int code) throws IOException {
