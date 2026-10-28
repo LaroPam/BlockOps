@@ -175,6 +175,26 @@ async fn join_in_minecraft(state: State<'_, AppState>, pairing_code: String) -> 
 }
 
 #[tauri::command]
+async fn detect_open_world(
+    state: State<'_, AppState>,
+    pairing_code: String,
+) -> Result<u16, String> {
+    if pairing_code.len() > 80 {
+        return Err("Некорректный код сопряжения".into());
+    }
+    let guard = state.0.lock().await;
+    if guard.is_some() {
+        return Err("Сначала отключите текущее соединение".into());
+    }
+    blockops_coordination::local_bridge::request_world_port(&pairing_code)
+        .await
+        .map_err(|_| {
+            "Не удалось определить порт. Откройте мир для сети и получите новый код мода."
+                .to_owned()
+        })
+}
+
+#[tauri::command]
 async fn discover_minecraft_profiles(
     folder: Option<String>,
 ) -> Result<Vec<blockops_server_manager::minecraft_profiles::DiscoveredProfile>, String> {
@@ -277,6 +297,7 @@ fn main() {
             revoke_code,
             join_code,
             join_in_minecraft,
+            detect_open_world,
             open_eula,
             discover_minecraft_profiles,
             get_minecraft_selection,

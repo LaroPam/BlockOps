@@ -5,7 +5,9 @@ This is a client-only Fabric mod for Minecraft Java **1.21.1**, Java 21 and Fabr
 repository or distributed inside the mod.
 
 The mod registers the local client command `/blockops` and a pairing button in the title
-screen. The button opens a short-lived local bridge and lets the user copy a one-use secret.
+screen. Either opens a short-lived local bridge and lets the user copy a one-use secret.
+When the host has opened a single-player world to LAN, `/blockops` allows the desktop to
+request its current port from Minecraft without parsing LAN broadcasts.
 After the desktop has established a guest tunnel, the user can paste this secret into BlockOps
 and request that Minecraft start connecting. This experimental path is not yet verified in a
 real Minecraft client and must not be installed automatically.
@@ -17,6 +19,14 @@ The checked-in Gradle wrapper verifies the Gradle distribution SHA-256. The buil
 Minecraft, mappings and Fabric dependencies from their official repositories. Its output is
 `build/libs/blockops-fabric-client-0.1.0.jar`. GitHub Actions builds and archives this JAR.
 Building it does not establish that it works in a real Minecraft client.
+
+## Experimental world port
+
+In an open single-player world, enter `/blockops`, copy the local code, then use
+**Определить порт через мод** in BlockOps. This returns a snapshot only if the integrated
+server reports the world open to LAN. It still requires a manual one-use pairing code and
+does not monitor world closure. When the world closes, stop the host tunnel manually.
+The mod and the selected Minecraft instance must run on the host's computer.
 
 ## Experimental local pairing and join
 
@@ -38,5 +48,5 @@ user-controlled. Minecraft's Java runtime must provide the `jdk.httpserver` modu
 
 `./gradlew build` runs the Java bridge checks, including a Rust-to-Java test that passes a
 short-lived secret through a private test-process stdin pipe. Real Minecraft, mixin runtime,
-launcher compatibility and gameplay have not yet been tested. Automatic discovery/pairing,
+launcher compatibility and gameplay have not yet been tested. Automatic pairing and world-closure monitoring,
 mod installation, Forge, NeoForge and other Minecraft versions remain future work.

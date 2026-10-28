@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const desktopDir = fileURLToPath(new URL('..', import.meta.url));
 const vite = fileURLToPath(new URL('../../../node_modules/vite/bin/vite.js', import.meta.url));
 
-test('server settings, LAN port and Minecraft profile discovery' , { timeout: 60_000 }, async () => {
+test('server settings, detected LAN port and Minecraft profile discovery' , { timeout: 60_000 }, async () => {
   const probe = createServer();
   await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(0, '127.0.0.1', resolve); });
   const port = probe.address().port;
@@ -61,6 +61,7 @@ test('server settings, LAN port and Minecraft profile discovery' , { timeout: 60
       window.__calls = [];
       let session = null;
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'detect_open_world') { window.__detection = args; return 54321; }
         if (command === 'host') {
           window.__calls.push(args);
           session = { mode: 'host', endpoint: null, active_connections: 0, last_error: null, transport: null };
@@ -74,7 +75,14 @@ test('server settings, LAN port and Minecraft profile discovery' , { timeout: 60
     await lan.goto(baseUrl);
     const portInput = lan.getByLabel('Порт мира Minecraft');
     assert.equal(await portInput.inputValue(), '');
-    await portInput.fill('54321');
+    await lan.getByText('Определить порт через мод BlockOps', { exact: true }).click();
+    await lan.getByLabel('Код мода на этом компьютере').fill('12345:' + 'a'.repeat(64));
+    await lan.getByRole('button', { name: 'Определить порт', exact: true }).click();
+    await lan.getByText(/Порт получен из Minecraft/).waitFor();
+    assert.equal(await portInput.inputValue(), '54321');
+    assert.equal(await lan.getByLabel('Код мода на этом компьютере').inputValue(), '');
+    const detectionArgs = await lan.evaluate(() => window.__detection);
+    assert.deepEqual(detectionArgs, { pairingCode: '12345:' + 'a'.repeat(64) });
     await lan.getByRole('button', { name: 'Подготовить приглашение' }).click();
     await lan.waitForFunction(() => window.__calls.length === 1);
     const [hostArgs] = await lan.evaluate(() => window.__calls);

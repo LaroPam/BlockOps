@@ -197,3 +197,6 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .profile-choice button { margin-top: 20px; }
 
 .minecraft-join { margin-top: 22px; padding-top: 4px; border-top: 1px solid var(--line); }
+
+.world-detection { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 18px 0; padding-bottom: 8px; }
+.world-detection button { margin-top: 16px; }

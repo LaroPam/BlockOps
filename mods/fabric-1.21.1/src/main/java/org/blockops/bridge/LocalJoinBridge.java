@@ -17,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntPredicate;
+import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 
 /** An explicitly started, short-lived one-use local HTTP capability. */
@@ -31,17 +32,27 @@ public final class LocalJoinBridge implements AutoCloseable {
     private final LongSupplier ticker;
     private final AtomicBoolean used = new AtomicBoolean();
     private final IntPredicate onJoin;
+    private final IntSupplier onWorld;
 
     public LocalJoinBridge(IntPredicate onJoin, Duration lifetime) throws IOException {
-        this(onJoin, lifetime, System::nanoTime);
+        this(onJoin, () -> 0, lifetime, System::nanoTime);
+    }
+
+    public LocalJoinBridge(IntPredicate onJoin, IntSupplier onWorld, Duration lifetime) throws IOException {
+        this(onJoin, onWorld, lifetime, System::nanoTime);
     }
 
     LocalJoinBridge(IntPredicate onJoin, Duration lifetime, LongSupplier ticker) throws IOException {
-        if (onJoin == null || ticker == null || lifetime == null || lifetime.isNegative() || lifetime.isZero()
+        this(onJoin, () -> 0, lifetime, ticker);
+    }
+
+    private LocalJoinBridge(IntPredicate onJoin, IntSupplier onWorld, Duration lifetime, LongSupplier ticker) throws IOException {
+        if (onJoin == null || onWorld == null || ticker == null || lifetime == null || lifetime.isNegative() || lifetime.isZero()
                 || lifetime.compareTo(Duration.ofMinutes(5)) > 0) {
             throw new IllegalArgumentException("Invalid bridge lifetime or callback");
         }
         this.onJoin = onJoin;
+        this.onWorld = onWorld;
         this.ticker = ticker;
         this.startedNanos = ticker.getAsLong();
         this.lifetimeNanos = lifetime.toNanos();
@@ -62,6 +73,7 @@ public final class LocalJoinBridge implements AutoCloseable {
         });
         server.setExecutor(worker);
         server.createContext("/v1/join", this::handle);
+        server.createContext("/v1/world", this::handle);
         server.start();
         expiry.schedule(this::close, lifetime.toNanos(), TimeUnit.NANOSECONDS);
     }
@@ -73,8 +85,9 @@ public final class LocalJoinBridge implements AutoCloseable {
 
     private void handle(HttpExchange exchange) throws IOException {
         try {
+            String path = exchange.getRequestURI().getRawPath();
             if (!"POST".equals(exchange.getRequestMethod())
-                    || !"/v1/join".equals(exchange.getRequestURI().getRawPath())
+                    || !("/v1/join".equals(path) || "/v1/world".equals(path))
                     || exchange.getRequestURI().getRawQuery() != null
                     || exchange.getRequestHeaders().containsKey("Origin")
                     || exchange.getRequestHeaders().containsKey("Transfer-Encoding")
@@ -89,6 +102,17 @@ public final class LocalJoinBridge implements AutoCloseable {
             if (candidate.length != token.length || !MessageDigest.isEqual(token, candidate)
                     || ticker.getAsLong() - startedNanos >= lifetimeNanos || used.get()) {
                 respond(exchange, 403);
+                return;
+            }
+            if ("/v1/world".equals(path)) {
+                if (!used.compareAndSet(false, true)) { respond(exchange, 403); return; }
+                int port = onWorld.getAsInt();
+                if (port < 1 || port > 65535) { respond(exchange, 409); return; }
+                byte[] body = Integer.toString(port).getBytes(StandardCharsets.US_ASCII);
+                exchange.getResponseHeaders().set("Cache-Control", "no-store");
+                exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=us-ascii");
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
                 return;
             }
             var values = exchange.getRequestHeaders().get("X-BlockOps-Port");

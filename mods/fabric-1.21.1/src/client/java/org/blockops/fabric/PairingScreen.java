@@ -31,6 +31,8 @@ public final class PairingScreen extends Screen {
 
     Screen parentScreen() { return parent; }
 
+    @Override public boolean shouldPause() { return false; }
+
     @Override public void close() { if (client != null) client.setScreen(parent); }
 
     @Override public void render(DrawContext context, int mouseX, int mouseY, float delta) {
