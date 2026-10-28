@@ -174,6 +174,32 @@ async fn discover_minecraft_profiles(
     })
 }
 #[tauri::command]
+async fn get_minecraft_selection(
+    state: tauri::State<'_, servers::Servers>,
+) -> Result<Option<blockops_server_manager::minecraft_selection::MinecraftSelection>, String> {
+    let manager = state.manager.clone();
+    tokio::task::spawn_blocking(move || manager.minecraft_selection())
+        .await
+        .map_err(|_| "Не удалось прочитать выбранную сборку".to_owned())?
+        .map_err(|_| "Не удалось прочитать выбранную сборку".to_owned())
+}
+
+#[tauri::command]
+async fn save_minecraft_selection(
+    state: tauri::State<'_, servers::Servers>,
+    selection: blockops_server_manager::minecraft_selection::MinecraftSelection,
+) -> Result<blockops_server_manager::minecraft_selection::MinecraftSelection, String> {
+    let manager = state.manager.clone();
+    tokio::task::spawn_blocking(move || manager.save_minecraft_selection(selection))
+        .await
+        .map_err(|_| "Не удалось сохранить выбор".to_owned())?
+        .map_err(|_| {
+            "Не удалось сохранить выбор. Укажите полный путь к существующей папке сборки."
+                .to_owned()
+        })
+}
+
+#[tauri::command]
 fn open_eula(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
@@ -232,6 +258,8 @@ fn main() {
             join_code,
             open_eula,
             discover_minecraft_profiles,
+            get_minecraft_selection,
+            save_minecraft_selection,
             host,
             join,
             status,

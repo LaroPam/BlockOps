@@ -191,3 +191,7 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .profile-list { list-style: none; padding: 0; }
 .profile-list li { padding: 16px; margin: 12px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .profile-list li p { margin: 8px 0; }
+
+.profile-choice { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.profile-choice h3 { margin: 0; }
+.profile-choice button { margin-top: 20px; }

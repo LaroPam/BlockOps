@@ -90,19 +90,28 @@ test('server settings, LAN port and Minecraft profile discovery' , { timeout: 60
           window.__calls.push(args);
           return [{ name: 'Моя сборка', game_dir: 'C:\\Games\\Minecraft', version_id: 'custom', minecraft_version: '1.21.1', loader: 'fabric', metadata_complete: true }];
         }
-        if (command === 'status') return null;
+        if (command === 'save_minecraft_selection') { window.__calls.push(args); return args.selection; }
+        if (command === 'status' || command === 'get_minecraft_selection') return null;
         if (command === 'servers') return [];
         return null;
       }};
     });
     await profiles.goto(baseUrl);
-    await profiles.getByText('Найти мои сборки Minecraft', { exact: true }).click();
+    await profiles.getByText('Найти мою сборку Minecraft', { exact: true }).click();
     await profiles.getByLabel('Папка Minecraft').fill('C:\\MyLauncher');
     await profiles.getByRole('button', { name: 'Найти сборки', exact: true }).click();
     await profiles.getByText('Моя сборка', { exact: true }).waitFor();
     assert.match(await profiles.locator('.profile-list').innerText(), /Загрузчик: Fabric/);
     const [scanArgs] = await profiles.evaluate(() => window.__calls);
     assert.equal(scanArgs.folder, 'C:\\MyLauncher');
+    await profiles.getByRole('button', { name: 'Выбрать эту папку' }).click();
+    assert.equal(await profiles.getByLabel('Папка игровой сборки').inputValue(), 'C:\\Games\\Minecraft');
+    assert.equal(await profiles.getByRole('button', { name: 'Сохранить выбор' }).isDisabled(), true);
+    await profiles.getByLabel('Какой загрузчик установлен?').selectOption('unknown');
+    await profiles.getByRole('button', { name: 'Сохранить выбор' }).click();
+    await profiles.getByText(/Совместимость ещё не проверена/).waitFor();
+    const [, savedArgs] = await profiles.evaluate(() => window.__calls);
+    assert.deepEqual(savedArgs.selection, { game_dir: 'C:\\Games\\Minecraft', loader: 'unknown' });
     await profiles.close();
   } finally {
     if (browser) await browser.close();
