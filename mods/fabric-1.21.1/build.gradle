@@ -32,3 +32,10 @@ java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
 }
+
+tasks.register('localBridgeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.blockops.bridge.LocalJoinBridgeTest'
+}
+tasks.named('check') { dependsOn tasks.named('localBridgeTest') }
