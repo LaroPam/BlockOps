@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tunnel", "crates/relay", "crates/server-manager", "crates/coordination"]
+members = ["crates/tunnel", "crates/relay", "crates/server-manager", "crates/coordination", "crates/local-discovery"]
 exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
 
