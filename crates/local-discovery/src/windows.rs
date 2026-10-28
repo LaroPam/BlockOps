@@ -164,19 +164,37 @@ pub fn read_private(path: &Path) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, process::Command};
+    use std::{
+        fs,
+        io::Write,
+        os::windows::{ffi::OsStrExt, io::FromRawHandle},
+        process::Command,
+    };
+    use windows_sys::Win32::{
+        Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE},
+        Security::{
+            Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            SECURITY_ATTRIBUTES,
+        },
+        Storage::FileSystem::{CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL},
+    };
 
-    fn icacls(path: &Path, args: &[&str]) {
-        let status = Command::new("icacls")
+    fn wide(text: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
+        text.as_ref().encode_wide().chain([0]).collect()
+    }
+
+    fn icacls(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("icacls")
             .arg(path)
             .args(args)
             .output()
             .expect("run icacls");
         assert!(
-            status.status.success(),
+            output.status.success(),
             "icacls failed: {}",
-            String::from_utf8_lossy(&status.stderr)
+            String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
     fn user_sid() -> String {
@@ -194,22 +212,63 @@ mod tests {
             .to_owned()
     }
 
+    /// Create a file as the mod does: explicit owner and protected owner-only DACL at creation.
+    /// `icacls /inheritance:r` alone is not equivalent: a file may also receive explicit
+    /// ACEs from the creator's default DACL, which it keeps.
+    fn create_private(path: &Path, sid: &str, contents: &[u8]) {
+        unsafe {
+            let sddl = wide(format!("O:{sid}D:P(A;;FA;;;{sid})"));
+            let mut descriptor = ptr::null_mut();
+            assert_ne!(
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl.as_ptr(),
+                    1,
+                    &mut descriptor,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            let descriptor = SecurityDescriptor(descriptor);
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.0,
+                bInheritHandle: 0,
+            };
+            let handle = CreateFileW(
+                wide(path).as_ptr(),
+                GENERIC_WRITE,
+                0,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            );
+            assert_ne!(handle, INVALID_HANDLE_VALUE);
+            let mut file = fs::File::from_raw_handle(handle);
+            file.write_all(contents).unwrap();
+        }
+    }
+
     #[test]
     fn rejects_broad_and_inherited_permissions() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("descriptor.json");
-        fs::write(&path, b"synthetic secret").unwrap();
         let sid = user_sid();
-        let principal = format!("*{sid}");
-        let grant = format!("{principal}:(F)");
-        icacls(&path, &["/setowner", &principal]);
-        icacls(&path, &["/inheritance:r"]);
-        icacls(&path, &["/grant:r", &grant]);
-        assert_eq!(read_private(&path).unwrap(), b"synthetic secret");
+        create_private(&path, &sid, b"synthetic secret");
+        assert_eq!(
+            read_private(&path).unwrap_or_else(|error| panic!("{error}: {}", icacls(&path, &[]))),
+            b"synthetic secret"
+        );
         icacls(&path, &["/grant", "*S-1-1-0:(R)"]);
         assert!(read_private(&path).is_err());
         icacls(&path, &["/remove:g", "*S-1-1-0"]);
+        assert!(read_private(&path).is_ok(), "{}", icacls(&path, &[]));
         icacls(&path, &["/inheritance:e"]);
         assert!(read_private(&path).is_err());
+
+        // Ordinary permissions are never private enough to carry a capability.
+        let plain = directory.path().join("plain.json");
+        fs::write(&plain, b"synthetic secret").unwrap();
+        assert!(read_private(&plain).is_err());
     }
 }
