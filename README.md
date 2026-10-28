@@ -7,6 +7,7 @@ an encrypted application-level TCP tunnel. **Iteration 3: Vanilla manager, ident
 - [Vanilla server installation, lifecycle and current limitations](docs/servers.md)
 - [Architecture, feasibility, trust boundaries and roadmap](docs/architecture.md)
 - [Connecting an existing Minecraft world](docs/lan-world.md)
+- [Discovering Minecraft profiles](docs/minecraft-profiles.md)
 - [Local verification and Windows desktop](docs/development.md)
 - [Windows preview installation and test guide](docs/windows-test.md)
 - [Public relay deployment and traffic limits](docs/relay.md)
