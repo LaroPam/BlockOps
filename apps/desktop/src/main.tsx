@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import './style.css';
 import { Servers } from './Servers';
 import { Codes } from './Codes';
+import { MinecraftProfiles } from './MinecraftProfiles';
 
 type Session = {
   mode: string;
@@ -23,8 +24,7 @@ function explainError(error: unknown): string {
 
 function App() {
   const [mode, setMode] = useState<'host' | 'join'>('host');
-  const [createSignal, setCreateSignal] = useState(0);
-  const [target, setTarget] = useState('127.0.0.1:25565');
+  const [lanPort, setLanPort] = useState('');
   const [relay, setRelay] = useState('');
   const [invite, setInvite] = useState('');
   const [coordinator, setCoordinator] = useState('http://127.0.0.1:8080');
@@ -64,7 +64,7 @@ function App() {
     e.preventDefault();
     setBusy(true);
     setError('');
-    try { setSession(await invoke<Session>('host', { target, relay: relay.trim() || null })); }
+    try { const port = Number(lanPort); if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Укажите порт от 1 до 65535.'); setSession(await invoke<Session>('host', { target: `127.0.0.1:${port}`, relay: relay.trim() || null })); window.setTimeout(() => sessionRef.current?.scrollIntoView({ behavior: 'auto' }), 100); }
     catch (e) { setError(explainError(e)); }
     finally { setBusy(false); }
   }
@@ -89,13 +89,13 @@ function App() {
       <div className="header-meta"><span>Minecraft Java</span><span className="badge">Ранняя версия</span></div>
     </header>
     <section className="intro">
-      <div><h1>Игра начинается здесь</h1><p>Свой сервер для вашей компании. Просто создайте мир и пригласите друзей.</p></div>
-      <span className="edition">Vanilla</span>
+      <div><h1>Игра начинается здесь</h1><p>Откройте свой мир Minecraft и пригласите друзей играть вместе.</p></div>
+      <span className="edition">Minecraft Java</span>
     </section>
     {!desktop && <p role="alert" className="error">Это просмотр интерфейса в браузере. Для управления сервером необходимо открыть приложение BlockOps.</p>}
 
     <nav className="main-actions" aria-label="Основные действия">
-      <button type="button" className={mode === 'host' ? 'selected' : ''} aria-pressed={mode === 'host'} onClick={() => { setMode('host'); setCreateSignal(value => value + 1); setError(''); }}><span className="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M12 4v16M4 12h16"/></svg></span><span className="action-copy"><strong>Создать сервер</strong><small>Новый мир на вашем компьютере</small></span></button>
+      <button type="button" className={mode === 'host' ? 'selected' : ''} aria-pressed={mode === 'host'} onClick={() => { setMode('host'); setError(''); }}><span className="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M12 4v16M4 12h16"/></svg></span><span className="action-copy"><strong>Открыть свой мир</strong><small>Играйте вместе в уже созданном мире</small></span></button>
       <button type="button" className={mode === 'join' ? 'selected' : ''} aria-pressed={mode === 'join'} onClick={() => { setMode('join'); setError(''); }}><span className="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M4 12h13m-5-5 5 5-5 5M19 4v16"/></svg></span><span className="action-copy"><strong>Присоединиться</strong><small>Войти в мир друга по коду</small></span></button>
     </nav>
 
@@ -103,7 +103,18 @@ function App() {
     {needsPublicServices && <p className="notice">Для игры через интернет пока нужны отдельно развёрнутые сервисы. Их адреса можно указать в дополнительных настройках. Локальная проверка доступна на одном компьютере.</p>}
 
     <div className="workspace"><div className="workspace-main">
-    <div hidden={mode !== 'host'}><Servers desktop={desktop} relay={relay} createSignal={createSignal} onInvite={() => void refreshSession()}/></div>
+    <div hidden={mode !== 'host'}>
+      <form className="card lan-card" onSubmit={startExternal}>
+        <h2>Пригласите друга в свой мир</h2>
+        <p>Откройте мир в Minecraft Java, нажмите «Открыть для сети» и укажите порт из сообщения в чате игры.</p>
+        <label htmlFor="lan-port">Порт мира Minecraft</label>
+        <input id="lan-port" type="number" min={1} max={65535} step={1} required value={lanPort} onChange={e => setLanPort(e.target.value)} placeholder="Например, 54321" disabled={busy || session !== null}/>
+        <p>Открывая мир для сети, вы также делаете его доступным в вашей локальной сети согласно настройкам Minecraft и Windows. Закрывая мир, отключите соединение в BlockOps: после закрытия этот порт может занять другая программа.</p>
+        <button className="primary" disabled={!desktop || busy || session !== null}>{busy ? 'Подготавливаем соединение…' : 'Подготовить приглашение'}</button>
+        {session && <p>Чтобы открыть другой мир, сначала отключите текущее соединение.</p>}
+      </form>
+      <details className="managed-servers"><summary>Отдельные серверы BlockOps</summary><Servers desktop={desktop} relay={relay} createSignal={0} onInvite={() => void refreshSession()}/></details>
+    </div>
     {mode === 'join' && !session && <form className="card join-card" onSubmit={join}>
 
         <h2>Войдите в мир друга</h2>
@@ -115,14 +126,14 @@ function App() {
       </form>}
     </div><aside className="guide" aria-label="Как начать">
       <h2>{mode === 'host' ? 'Как начать' : 'Как присоединиться'}</h2>
-      {mode === 'host' ? <ol><li><strong>Создайте сервер</strong><span>Выберите настройки для вашего мира.</span></li><li><strong>Запустите мир</strong><span>Дождитесь завершения запуска.</span></li><li><strong>Пригласите друзей</strong><span>Создайте и отправьте им код.</span></li></ol> : <ol><li><strong>Получите код</strong><span>Попросите друга прислать приглашение.</span></li><li><strong>Введите приглашение</strong><span>BlockOps подготовит адрес сервера.</span></li><li><strong>Откройте Minecraft</strong><span>Добавьте полученный адрес в сетевой игре.</span></li></ol>}
+      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>Запишите порт из сообщения в игре.</span></li><li><strong>Пригласите друга</strong><span>Введите порт и отправьте другу код.</span></li></ol> : <ol><li><strong>Получите код</strong><span>Попросите друга прислать приглашение.</span></li><li><strong>Введите приглашение</strong><span>BlockOps подготовит адрес сервера.</span></li><li><strong>Откройте Minecraft</strong><span>Добавьте полученный адрес в сетевой игре.</span></li></ol>}
     </aside></div>
 
     {session && mode !== session.mode && <p className="notice">Активное соединение останется открытым. Чтобы создать новое, сначала отключите текущее.</p>}
     {session && <section className="card session-card" ref={sessionRef} aria-live="polite">
       {session.mode === 'host' ? <>
         <h2>Пригласите друзей</h2>
-        <p>Создайте отдельный код для каждого друга. Не публикуйте код: его может использовать тот, кто увидит его первым.</p>
+        <p>Соединение подготовлено. Доступность мира проверяется при подключении игрока. Создайте отдельный код для каждого друга и не публикуйте его.</p>
         <Codes coordinator={coordinator.trim()}/>
       </> : <>
         <h2>Откройте Minecraft</h2>
@@ -136,6 +147,7 @@ function App() {
       </details>
       <button type="button" disabled={busy} onClick={stop}>Отключить соединение</button>
     </section>}
+    <MinecraftProfiles desktop={desktop}/>
     <details className="advanced">
       <summary>Дополнительные настройки подключения</summary>
       <p>В этой версии публичные сервисы BlockOps ещё не развёрнуты. Для игры через интернет нужны адреса вашего сервиса координации и relay. Для проверки на одном компьютере можно оставить локальные настройки.</p>
@@ -145,15 +157,7 @@ function App() {
       <input id="relay" disabled={session !== null} value={relay} onChange={e => setRelay(e.target.value)} placeholder="/ip4/…/tcp/4001/p2p/…" spellCheck={false}/>
       <p>Для публичного сервиса нужен HTTPS. Оба игрока указывают один адрес сервиса координации; relay указывает только хозяин. Укажите адреса до создания соединения.</p>
       {session && <p>Чтобы изменить адреса, сначала отключите текущее соединение.</p>}
-      <details>
-        <summary>Подключить уже запущенный сервер</summary>
-        <form onSubmit={startExternal}>
-          <p>Если сервер запущен отдельно, можно создать для него защищённое соединение. У сервера должны быть приняты условия Minecraft и включён online-mode.</p>
-          <label htmlFor="target">Локальный адрес сервера</label>
-          <input id="target" required value={target} onChange={e => setTarget(e.target.value)} />
-          <button disabled={!desktop || busy || session !== null}>Создать соединение</button>
-        </form>
-      </details>
+
     </details>
 
 

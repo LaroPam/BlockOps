@@ -155,6 +155,51 @@ async fn join_code(
     Ok(result)
 }
 #[tauri::command]
+async fn discover_minecraft_profiles(
+    folder: Option<String>,
+) -> Result<Vec<blockops_server_manager::minecraft_profiles::DiscoveredProfile>, String> {
+    let root = match folder.filter(|value| !value.trim().is_empty()) {
+        Some(folder) => std::path::PathBuf::from(folder),
+        None => std::env::var_os("APPDATA")
+            .map(|base| std::path::PathBuf::from(base).join(".minecraft"))
+            .ok_or("Укажите путь к папке Minecraft вручную")?,
+    };
+    tokio::task::spawn_blocking(move || {
+        blockops_server_manager::minecraft_profiles::discover(&root)
+    })
+    .await
+    .map_err(|_| "Не удалось завершить поиск сборок".to_owned())?
+    .map_err(|_| {
+        "Не удалось прочитать профили Minecraft Launcher. Проверьте выбранную папку.".to_owned()
+    })
+}
+#[tauri::command]
+async fn get_minecraft_selection(
+    state: tauri::State<'_, servers::Servers>,
+) -> Result<Option<blockops_server_manager::minecraft_selection::MinecraftSelection>, String> {
+    let manager = state.manager.clone();
+    tokio::task::spawn_blocking(move || manager.minecraft_selection())
+        .await
+        .map_err(|_| "Не удалось прочитать выбранную сборку".to_owned())?
+        .map_err(|_| "Не удалось прочитать выбранную сборку".to_owned())
+}
+
+#[tauri::command]
+async fn save_minecraft_selection(
+    state: tauri::State<'_, servers::Servers>,
+    selection: blockops_server_manager::minecraft_selection::MinecraftSelection,
+) -> Result<blockops_server_manager::minecraft_selection::MinecraftSelection, String> {
+    let manager = state.manager.clone();
+    tokio::task::spawn_blocking(move || manager.save_minecraft_selection(selection))
+        .await
+        .map_err(|_| "Не удалось сохранить выбор".to_owned())?
+        .map_err(|_| {
+            "Не удалось сохранить выбор. Укажите полный путь к существующей папке сборки."
+                .to_owned()
+        })
+}
+
+#[tauri::command]
 fn open_eula(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
@@ -212,6 +257,9 @@ fn main() {
             revoke_code,
             join_code,
             open_eula,
+            discover_minecraft_profiles,
+            get_minecraft_selection,
+            save_minecraft_selection,
             host,
             join,
             status,

@@ -1,6 +1,8 @@
 pub mod artifacts;
 pub mod backups;
 pub mod java;
+pub mod minecraft_profiles;
+pub mod minecraft_selection;
 pub mod process;
 mod settings_update;
 pub mod stop_states;

@@ -179,3 +179,19 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .action-error summary { color: var(--danger); padding: 12px 0 0; }
 .action-error code { color: var(--danger); margin-top: 10px; white-space: pre-wrap; }
 @media (max-width: 460px) { .server-heading { flex-direction: column; } .server-status { max-width: 100%; } }
+
+/* Open an existing Minecraft LAN world. */
+.lan-card > p { max-width: 56ch; }
+.managed-servers { margin-top: 24px; border-top: 1px solid var(--line); }
+.managed-servers > summary { padding: 18px 0; }
+.managed-servers[open] { padding-bottom: 16px; }
+
+.profiles-panel { border-top: 1px solid var(--line); margin-top: 36px; }
+.profiles-panel > p, .profiles-panel form { max-width: 700px; }
+.profile-list { list-style: none; padding: 0; }
+.profile-list li { padding: 16px; margin: 12px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.profile-list li p { margin: 8px 0; }
+
+.profile-choice { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.profile-choice h3 { margin: 0; }
+.profile-choice button { margin-top: 20px; }
