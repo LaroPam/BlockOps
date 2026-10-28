@@ -1,10 +1,18 @@
-//! Strict primitives for private Windows descriptor discovery; not yet connected to the UI.
+//! Private Windows descriptor discovery of the local Minecraft companion.
 #[cfg(any(windows, test))]
 use anyhow::ensure;
 use anyhow::Result;
 #[cfg(any(windows, test))]
 use serde::Deserialize;
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+/// Bound on directory entries examined, so a cluttered folder cannot stall the caller.
+const MAX_ENTRIES: usize = 64;
+/// The mod advertises a bridge for under five minutes; anything longer is not trusted.
+const MAX_LIFETIME_SECS: u64 = 600;
 
 /// Contains a secret: deliberately not Debug or Serialize.
 pub struct Descriptor {
@@ -60,6 +68,62 @@ pub fn read_private(_path: &Path) -> Result<Descriptor> {
     anyhow::bail!("Private descriptor verification is available only on Windows")
 }
 
+/// `%LOCALAPPDATA%\\BlockOps\\discovery`, where the mod publishes its descriptors.
+pub fn default_directory() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|base| !base.is_empty())
+        .map(|base| PathBuf::from(base).join("BlockOps").join("discovery"))
+}
+
+/// Unexpired private descriptors, newest first. Unreadable, foreign or malformed files
+/// are skipped silently: they may be stale or hostile, and their contents are secret.
+pub fn discover(directory: &Path) -> Vec<Descriptor> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    discover_with(directory, now, |path| {
+        let descriptor = read_private(path)?;
+        anyhow::ensure!(process_alive(descriptor.pid), "Descriptor owner exited");
+        Ok(descriptor)
+    })
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    windows::process_alive(pid)
+}
+#[cfg(not(windows))]
+fn process_alive(_pid: u32) -> bool {
+    false
+}
+
+fn discover_with(
+    directory: &Path,
+    now: u64,
+    read: impl Fn(&Path) -> Result<Descriptor>,
+) -> Vec<Descriptor> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut found: Vec<_> = entries
+        .take(MAX_ENTRIES)
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("minecraft-") && name.ends_with(".json"))
+        })
+        .filter_map(|path| read(&path).ok())
+        .filter(|descriptor| {
+            descriptor.expires_at > now && descriptor.expires_at <= now + MAX_LIFETIME_SECS
+        })
+        .collect();
+    found.sort_by_key(|descriptor| std::cmp::Reverse(descriptor.expires_at));
+    found
+}
+
 #[cfg(windows)]
 mod windows;
 
@@ -80,6 +144,29 @@ mod tests {
         let extra = valid.replacen("{", "{\"extra\":true,", 1);
         assert!(parse(extra.as_bytes()).is_err());
         assert!(parse(&vec![b' '; 4097]).is_err());
+    }
+    #[test]
+    fn discovery_returns_only_live_named_descriptors() {
+        let directory = tempfile::tempdir().unwrap();
+        let write = |name: &str, port: u16, expires_at: u64| {
+            let json = format!(
+                r#"{{"version":1,"pid":7,"port":{port},"token":"{}","expires_at":{expires_at}}}"#,
+                "cd".repeat(32)
+            );
+            std::fs::write(directory.path().join(name), json).unwrap();
+        };
+        write("minecraft-1.json", 1001, 1100);
+        write("minecraft-2.json", 1002, 1200);
+        write("minecraft-3.json", 1003, 1000); // expired
+        write("minecraft-4.json", 1004, 1000 + MAX_LIFETIME_SECS + 1); // implausible
+        write("minecraft-5.tmp", 1005, 1200); // still being written
+        write("other.json", 1006, 1200);
+        std::fs::write(directory.path().join("minecraft-6.json"), b"{broken").unwrap();
+        let read = |path: &Path| parse(&std::fs::read(path)?);
+        let found = discover_with(directory.path(), 1000, read);
+        let ports: Vec<_> = found.iter().map(|descriptor| descriptor.port).collect();
+        assert_eq!(ports, [1002, 1001]);
+        assert!(discover_with(&directory.path().join("missing"), 1000, read).is_empty());
     }
     #[test]
     fn malformed_descriptors_do_not_echo_secrets() {

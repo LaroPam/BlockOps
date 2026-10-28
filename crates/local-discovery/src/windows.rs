@@ -10,7 +10,7 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, LocalFree, HANDLE},
+    Foundation::{CloseHandle, LocalFree, HANDLE, STILL_ACTIVE},
     Security::{
         Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
         EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsValidAcl,
@@ -20,7 +20,10 @@ use windows_sys::Win32::{
     Storage::FileSystem::{
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
     },
-    System::Threading::{GetCurrentProcess, OpenProcessToken},
+    System::Threading::{
+        GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    },
 };
 
 struct Handle(HANDLE);
@@ -37,6 +40,20 @@ impl Drop for SecurityDescriptor {
         unsafe {
             LocalFree(self.0);
         }
+    }
+}
+
+/// Whether a process with this id is still running. A reused id can still pass, so this
+/// only screens out descriptors left by a crashed game; the bridge proof decides trust.
+pub fn process_alive(pid: u32) -> bool {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let process = Handle(process);
+        let mut code = 0;
+        GetExitCodeProcess(process.0, &mut code) != 0 && code == STILL_ACTIVE as u32
     }
 }
 

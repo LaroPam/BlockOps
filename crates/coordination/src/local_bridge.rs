@@ -1,9 +1,78 @@
 //! Requests to an explicitly paired local Minecraft companion.
+//!
+//! The capability never crosses the socket: each request carries a fresh nonce and an
+//! HMAC-SHA256 over its path, nonce and port, and every success response must carry an
+//! HMAC over the path, nonce and payload. A different process that later binds the same
+//! loopback port therefore neither learns the capability nor passes as the companion.
 use anyhow::{ensure, Result};
+use hmac::{Hmac, Mac};
+use rand::RngCore;
+use sha2::Sha256;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn mac(token: &[u8; 32], direction: &str, path: &str, nonce: &str, value: &str) -> HmacSha256 {
+    let mut mac = HmacSha256::new_from_slice(token).expect("HMAC accepts any key length");
+    mac.update(format!("blockops-bridge-{direction}-v1\n{path}\n{nonce}\n{value}").as_bytes());
+    mac
+}
+
+/// Send one authenticated request and return the response with the nonce it must prove.
+async fn send(
+    client: &reqwest::Client,
+    bridge_port: u16,
+    token: &[u8; 32],
+    path: &str,
+    port: Option<u16>,
+) -> Result<(reqwest::Response, String)> {
+    ensure!(bridge_port != 0, "Invalid companion port");
+    let mut nonce = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let nonce = hex::encode(nonce);
+    let port = port.map(|port| port.to_string()).unwrap_or_default();
+    let auth = hex::encode(
+        mac(token, "request", path, &nonce, &port)
+            .finalize()
+            .into_bytes(),
+    );
+    let mut request = client
+        .post(format!("http://127.0.0.1:{bridge_port}{path}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("BlockOps-HMAC {auth}"),
+        )
+        .header("X-BlockOps-Nonce", &nonce)
+        .header(reqwest::header::CONTENT_LENGTH, "0")
+        .body("");
+    if !port.is_empty() {
+        request = request.header("X-BlockOps-Port", port);
+    }
+    Ok((request.send().await?, nonce))
+}
+
+/// Accept a success response only if it proves knowledge of the capability.
+fn verify(
+    response: &reqwest::Response,
+    token: &[u8; 32],
+    path: &str,
+    nonce: &str,
+    payload: &str,
+) -> Result<()> {
+    let proof = response
+        .headers()
+        .get("x-blockops-proof")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() == 64)
+        .and_then(|value| hex::decode(value).ok())
+        .ok_or_else(|| anyhow::anyhow!("Local companion did not prove its identity"))?;
+    mac(token, "response", path, nonce, payload)
+        .verify_slice(&proof)
+        .map_err(|_| anyhow::anyhow!("Local companion did not prove its identity"))
+}
 
 fn local_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
@@ -46,20 +115,20 @@ pub async fn request_join(bridge_port: u16, token: &[u8; 32], endpoint: SocketAd
         endpoint.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST) && endpoint.port() != 0,
         "Minecraft endpoint must be IPv4 loopback"
     );
-    let response = local_client()?
-        .post(format!("http://127.0.0.1:{bridge_port}/v1/join"))
-        .bearer_auth(hex::encode(token))
-        .header("X-BlockOps-Port", endpoint.port().to_string())
-        .header(reqwest::header::CONTENT_LENGTH, "0")
-        .body("")
-        .send()
-        .await?;
+    let (response, nonce) = send(
+        &local_client()?,
+        bridge_port,
+        token,
+        "/v1/join",
+        Some(endpoint.port()),
+    )
+    .await?;
     ensure!(
         response.status() == reqwest::StatusCode::ACCEPTED,
         "Local companion rejected the join request (HTTP {})",
         response.status()
     );
-    Ok(())
+    verify(&response, token, "/v1/join", &nonce, "")
 }
 
 pub async fn request_paired_join(code: &str, endpoint: SocketAddr) -> Result<()> {
@@ -70,13 +139,8 @@ pub async fn request_paired_join(code: &str, endpoint: SocketAddr) -> Result<()>
 /// Obtain a snapshot from the paired mod; it is not proof that the world stays open.
 pub async fn request_world_port(code: &str) -> Result<u16> {
     let (bridge_port, token) = pairing(code)?;
-    let mut response = local_client()?
-        .post(format!("http://127.0.0.1:{bridge_port}/v1/world"))
-        .bearer_auth(hex::encode(token))
-        .header(reqwest::header::CONTENT_LENGTH, "0")
-        .body("")
-        .send()
-        .await?;
+    let (mut response, nonce) =
+        send(&local_client()?, bridge_port, &token, "/v1/world", None).await?;
     ensure!(
         response.status() == reqwest::StatusCode::OK,
         "Local companion did not report an open world"
@@ -93,7 +157,9 @@ pub async fn request_world_port(code: &str) -> Result<u16> {
         !body.is_empty() && body.iter().all(u8::is_ascii_digit),
         "Invalid world port response"
     );
-    let port: u16 = std::str::from_utf8(&body)?.parse()?;
+    let text = std::str::from_utf8(&body)?;
+    verify(&response, &token, "/v1/world", &nonce, text)?;
+    let port: u16 = text.parse()?;
     ensure!(port != 0, "Invalid world port response");
     Ok(port)
 }
@@ -135,20 +201,20 @@ async fn read_watch_line(response: &mut reqwest::Response, buffer: &mut Vec<u8>)
 /// Keep a one-use authenticated stream open and fail closed if the mod stops reporting.
 pub async fn watch_world(code: &str) -> Result<WorldWatch> {
     let (bridge_port, token) = pairing(code)?;
+    watch_world_at(bridge_port, &token).await
+}
+
+/// As [`watch_world`], for a companion found through private local discovery.
+pub async fn watch_world_at(bridge_port: u16, token: &[u8; 32]) -> Result<WorldWatch> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(12 * 60 * 60 + 10))
         .build()?;
-    let mut response = tokio::time::timeout(
+    let (mut response, nonce) = tokio::time::timeout(
         Duration::from_secs(8),
-        client
-            .post(format!("http://127.0.0.1:{bridge_port}/v1/watch-world"))
-            .bearer_auth(hex::encode(token))
-            .header(reqwest::header::CONTENT_LENGTH, "0")
-            .body("")
-            .send(),
+        send(&client, bridge_port, token, "/v1/watch-world", None),
     )
     .await??;
     ensure!(
@@ -166,6 +232,7 @@ pub async fn watch_world(code: &str) -> Result<WorldWatch> {
             && port_text.bytes().all(|b| b.is_ascii_digit()),
         "Invalid world watch port"
     );
+    verify(&response, token, "/v1/watch-world", &nonce, port_text)?;
     let port: u16 = port_text.parse()?;
     ensure!(port != 0, "Invalid world watch port");
     let (tx, alive) = tokio::sync::watch::channel(true);

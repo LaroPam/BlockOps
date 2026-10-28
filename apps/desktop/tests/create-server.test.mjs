@@ -61,8 +61,13 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       window.__calls = [];
       window.__worldAlive = true;
       let session = null;
+      window.__detections = [];
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-        if (command === 'detect_open_world') { window.__detection = args; return { id: 7, port: 54321 }; }
+        if (command === 'detect_open_world') {
+          window.__detections.push(args);
+          if (args.pairingCode === null && window.__detections.length === 1) throw 'Minecraft с модом BlockOps не найден на этом компьютере.';
+          return { id: 7, port: 54321 };
+        }
         if (command === 'world_watch_alive') return window.__worldAlive;
         if (command === 'host') {
           window.__calls.push(args);
@@ -77,14 +82,22 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await lan.goto(baseUrl);
     const portInput = lan.getByLabel('Порт мира Minecraft');
     assert.equal(await portInput.inputValue(), '');
-    await lan.getByText('Определить порт через мод BlockOps', { exact: true }).click();
+    // Automatic discovery first: a failure explains itself and leaves the manual path open.
+    const find = lan.getByRole('button', { name: 'Найти открытый мир', exact: true });
+    await find.click();
+    await lan.getByText(/Minecraft с модом BlockOps не найден/).waitFor();
+    assert.equal(await portInput.inputValue(), '');
+    await lan.locator('.world-detection').getByText('Ввести код мода вручную', { exact: true }).click();
     await lan.getByLabel('Код мода на этом компьютере').fill('12345:' + 'a'.repeat(64));
     await lan.getByRole('button', { name: 'Определить порт', exact: true }).click();
     await lan.getByText(/Порт получен из Minecraft/).waitFor();
     assert.equal(await portInput.inputValue(), '54321');
     assert.equal(await lan.getByLabel('Код мода на этом компьютере').inputValue(), '');
-    const detectionArgs = await lan.evaluate(() => window.__detection);
-    assert.deepEqual(detectionArgs, { pairingCode: '12345:' + 'a'.repeat(64) });
+    await find.click();
+    await lan.waitForFunction(() => window.__detections.length === 3);
+    await lan.getByText(/Порт получен из Minecraft/).waitFor();
+    const detectionArgs = await lan.evaluate(() => window.__detections);
+    assert.deepEqual(detectionArgs, [{ pairingCode: null }, { pairingCode: '12345:' + 'a'.repeat(64) }, { pairingCode: null }]);
     await lan.getByRole('button', { name: 'Подготовить приглашение' }).click();
     await lan.waitForFunction(() => window.__calls.length === 1);
     const [hostArgs] = await lan.evaluate(() => window.__calls);
@@ -108,12 +121,15 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       }};
     });
     await joinPage.goto(baseUrl);
-    const pairing = joinPage.getByLabel('Код сопряжения с Minecraft');
-    await pairing.fill('12345:' + 'a'.repeat(64));
     await joinPage.getByRole('button', { name: 'Войти в мир', exact: true }).click();
     await joinPage.getByText(/Minecraft начал попытку подключения/).waitFor();
-    const [joinArgs] = await joinPage.evaluate(() => window.__calls);
-    assert.deepEqual(joinArgs, { pairingCode: '12345:' + 'a'.repeat(64) });
+    await joinPage.locator('.minecraft-join').getByText('Ввести код мода вручную', { exact: true }).click();
+    const pairing = joinPage.getByLabel('Код сопряжения с Minecraft');
+    await pairing.fill('12345:' + 'a'.repeat(64));
+    await joinPage.getByRole('button', { name: 'Войти по коду', exact: true }).click();
+    await joinPage.waitForFunction(() => window.__calls.length === 2);
+    const joinArgs = await joinPage.evaluate(() => window.__calls);
+    assert.deepEqual(joinArgs, [{ pairingCode: null }, { pairingCode: '12345:' + 'a'.repeat(64) }]);
     assert.equal(await pairing.inputValue(), '');
     await joinPage.close();
     const profiles = await browser.newPage();

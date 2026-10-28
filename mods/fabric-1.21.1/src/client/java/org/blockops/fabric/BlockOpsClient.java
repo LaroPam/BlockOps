@@ -3,6 +3,8 @@ package org.blockops.fabric;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import net.fabricmc.api.ClientModInitializer;
@@ -19,16 +21,28 @@ import net.minecraft.client.network.ServerAddress;
 import net.minecraft.client.network.ServerInfo;
 import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.text.Text;
+import org.blockops.bridge.DiscoveryPublisher;
 import org.blockops.bridge.LocalJoinBridge;
+import org.blockops.bridge.WindowsDescriptorFile;
 import org.blockops.bridge.WorldIdentity;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/** Client-only companion. A bridge opens only after a local player requests pairing. */
+/**
+ * Client-only companion. On Windows it advertises a one-use bridge through a private
+ * descriptor that only this Windows user can read; elsewhere, and as a fallback, a bridge
+ * opens only after a local player requests pairing.
+ */
 public final class BlockOpsClient implements ClientModInitializer {
+    private static final Logger LOGGER = LoggerFactory.getLogger("blockops");
     private static LocalJoinBridge bridge;
+    private static DiscoveryPublisher discovery;
+    private static ScheduledExecutorService discoveryTimer;
     private static final AtomicBoolean openPairing = new AtomicBoolean();
 
     @Override public void onInitializeClient() {
-        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> stopPairing());
+        startDiscovery();
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> { stopPairing(); stopDiscovery(); });
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (openPairing.compareAndSet(true, false)) client.setScreen(new PairingScreen(null));
         });
@@ -48,6 +62,41 @@ public final class BlockOpsClient implements ClientModInitializer {
 
     private static synchronized void stopPairing() {
         if (bridge != null) { bridge.close(); bridge = null; }
+    }
+
+    private static synchronized void startDiscovery() {
+        if (!System.getProperty("os.name", "").startsWith("Windows")) return;
+        try {
+            var store = new WindowsDescriptorFile(WindowsDescriptorFile.defaultDirectory(), ProcessHandle.current().pid());
+            discovery = new DiscoveryPublisher(() -> {
+                WorldIdentity<IntegratedServer> watchedWorld = new WorldIdentity<>();
+                return new LocalJoinBridge(BlockOpsClient::startJoin, () -> openWorldPort(watchedWorld), Duration.ofMinutes(5));
+            }, store);
+        } catch (IOException | RuntimeException | LinkageError failure) {
+            LOGGER.warn("BlockOps automatic discovery is unavailable; use the pairing code instead");
+            return;
+        }
+        DiscoveryPublisher publisher = discovery;
+        AtomicBoolean failing = new AtomicBoolean();
+        discoveryTimer = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "blockops-discovery");
+            thread.setDaemon(true);
+            return thread;
+        });
+        discoveryTimer.scheduleWithFixedDelay(() -> {
+            try {
+                publisher.refresh();
+                failing.set(false);
+            } catch (Exception | LinkageError failure) {
+                // Usually the desktop is reading the previous descriptor; retried next second.
+                if (failing.compareAndSet(false, true)) LOGGER.warn("BlockOps could not refresh automatic discovery");
+            }
+        }, 0, 1, TimeUnit.SECONDS);
+    }
+
+    private static synchronized void stopDiscovery() {
+        if (discoveryTimer != null) { discoveryTimer.shutdownNow(); discoveryTimer = null; }
+        if (discovery != null) { discovery.close(); discovery = null; }
     }
 
     private static int openWorldPort(WorldIdentity<IntegratedServer> watchedWorld) {

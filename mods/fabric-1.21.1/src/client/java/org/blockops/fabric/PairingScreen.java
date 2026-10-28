@@ -37,8 +37,9 @@ public final class PairingScreen extends Screen {
 
     @Override public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
-        context.drawCenteredTextWithShadow(textRenderer, title, width / 2, height / 2 - 55, 0xFFFFFF);
-        context.drawCenteredTextWithShadow(textRenderer, Text.literal(failed ? "Не удалось открыть локальное сопряжение." : "Вставьте код в BlockOps на этом компьютере."), width / 2, height / 2 - 34, 0xFFFFFF);
+        context.drawCenteredTextWithShadow(textRenderer, title, width / 2, height / 2 - 72, 0xFFFFFF);
+        context.drawCenteredTextWithShadow(textRenderer, Text.literal("BlockOps на этом компьютере обычно находит Minecraft сам."), width / 2, height / 2 - 52, 0xC0C0C0);
+        context.drawCenteredTextWithShadow(textRenderer, Text.literal(failed ? "Не удалось открыть локальное сопряжение." : "Если не нашёл, вставьте этот код в BlockOps."), width / 2, height / 2 - 34, 0xFFFFFF);
         context.drawCenteredTextWithShadow(textRenderer, Text.literal(copied ? "Код скопирован. Не передавайте его другим." : "Код действует 5 минут и используется один раз."), width / 2, height / 2 - 17, 0xC0C0C0);
     }
 }

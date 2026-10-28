@@ -198,5 +198,6 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 
 .minecraft-join { margin-top: 22px; padding-top: 4px; border-top: 1px solid var(--line); }
 
-.world-detection { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 18px 0; padding-bottom: 8px; }
-.world-detection button { margin-top: 16px; }
+.world-detection { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 18px 0; padding: 4px 0 8px; }
+.world-detection button, .minecraft-join details button { margin-top: 16px; }
+.world-detection details, .minecraft-join details { margin-top: 8px; }

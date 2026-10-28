@@ -85,13 +85,11 @@ function App() {
     finally { setBusy(false); }
   }
 
-  async function detectWorld(e: React.FormEvent) {
-    e.preventDefault();
-    const code = hostPairingCode.trim();
-    if (!code) return;
+  // Without a code, BlockOps looks for the mod on this computer by itself.
+  async function detectWorld(pairingCode: string | null) {
     setHostPairingCode(''); setBusy(true); setWorldError(''); setWorldFeedback('');
     try {
-      const world = await invoke<{id:number;port:number}>('detect_open_world', { pairingCode: code });
+      const world = await invoke<{id:number;port:number}>('detect_open_world', { pairingCode });
       setWorldWatchId(world.id); setLanPort(String(world.port));
       setWorldFeedback('Порт получен из Minecraft. BlockOps отслеживает, открыт ли мир.');
     } catch (failure) { setWorldWatchId(null); setLanPort(''); setWorldError(String(failure)); }
@@ -107,13 +105,10 @@ function App() {
     finally { setBusy(false); }
   }
 
-  async function joinMinecraft(e: React.FormEvent) {
-    e.preventDefault();
-    const code = pairingCode.trim();
-    if (!code) return;
+  async function joinMinecraft(pairingCode: string | null) {
     setPairingCode(''); setBusy(true); setError(''); setJoinFeedback('');
     try {
-      await invoke('join_in_minecraft', { pairingCode: code });
+      await invoke('join_in_minecraft', { pairingCode });
       setJoinFeedback('Minecraft начал попытку подключения. Результат смотрите в игре.');
     } catch (failure) { setError(String(failure)); }
     finally { setBusy(false); }
@@ -157,17 +152,21 @@ function App() {
       <section className="card lan-card">
         <h2>Пригласите друга в свой мир</h2>
         <p>Откройте свой мир в Minecraft Java и выберите «Открыть для сети».</p>
-        <details className="world-detection">
-          <summary>Определить порт через мод BlockOps</summary>
-          <p>В открытом мире введите команду /blockops, скопируйте код мода и вставьте его сюда. Код одноразовый, действует 5 минут и предназначен только для этого компьютера.</p>
-          <form onSubmit={detectWorld}>
-            <label htmlFor="host-pairing-code">Код мода на этом компьютере</label>
-            <input id="host-pairing-code" type="password" maxLength={70} autoComplete="off" spellCheck={false} value={hostPairingCode} onChange={e=>setHostPairingCode(e.target.value)} disabled={busy || session !== null}/>
-            <button disabled={!desktop || busy || session !== null || !hostPairingCode.trim()}>Определить порт</button>
-          </form>
+        <div className="world-detection">
+          <p>С модом BlockOps приложение само найдёт открытый мир на этом компьютере и его порт.</p>
+          <button type="button" disabled={!desktop || busy || session !== null} onClick={() => void detectWorld(null)}>Найти открытый мир</button>
           {worldError && <p role="alert" className="error">{worldError}</p>}
           {worldFeedback && <p role="status">{worldFeedback}</p>}
-        </details>
+          <details>
+            <summary>Ввести код мода вручную</summary>
+            <p>Если мир не находится, в открытом мире введите команду /blockops, скопируйте код мода и вставьте его сюда. Код одноразовый, действует 5 минут и предназначен только для этого компьютера.</p>
+            <form onSubmit={e => { e.preventDefault(); const code = hostPairingCode.trim(); if (code) void detectWorld(code); }}>
+              <label htmlFor="host-pairing-code">Код мода на этом компьютере</label>
+              <input id="host-pairing-code" type="password" maxLength={70} autoComplete="off" spellCheck={false} value={hostPairingCode} onChange={e=>setHostPairingCode(e.target.value)} disabled={busy || session !== null}/>
+              <button disabled={!desktop || busy || session !== null || !hostPairingCode.trim()}>Определить порт</button>
+            </form>
+          </details>
+        </div>
         <form onSubmit={startExternal}>
           <label htmlFor="lan-port">Порт мира Minecraft</label>
           <input id="lan-port" type="number" min={1} max={65535} step={1} required value={lanPort} onChange={e => {setLanPort(e.target.value);setWorldWatchId(null);setWorldFeedback('');}} placeholder="Из мода или сообщения Minecraft" disabled={busy || session !== null}/>
@@ -189,7 +188,7 @@ function App() {
       </form>}
     </div><aside className="guide" aria-label="Как начать">
       <h2>{mode === 'host' ? 'Как начать' : 'Как присоединиться'}</h2>
-      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>Определите порт через мод или укажите его вручную.</span></li><li><strong>Пригласите друга</strong><span>Подготовьте соединение и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите код</strong><span>Попросите друга прислать приглашение.</span></li><li><strong>Введите приглашение</strong><span>BlockOps подготовит адрес сервера.</span></li><li><strong>Откройте Minecraft</strong><span>Добавьте полученный адрес в сетевой игре.</span></li></ol>}
+      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>Найдите мир через мод BlockOps или укажите порт вручную.</span></li><li><strong>Пригласите друга</strong><span>Подготовьте соединение и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите код</strong><span>Попросите друга прислать приглашение.</span></li><li><strong>Введите приглашение</strong><span>BlockOps подготовит адрес сервера.</span></li><li><strong>Откройте Minecraft</strong><span>Добавьте полученный адрес в сетевой игре.</span></li></ol>}
     </aside></div>
 
     {session && mode !== session.mode && <p className="notice">Активное соединение останется открытым. Чтобы создать новое, сначала отключите текущее.</p>}
@@ -202,14 +201,21 @@ function App() {
         <h2>Откройте Minecraft</h2>
         {session.endpoint && <><label>Адрес сервера для Minecraft</label><code className="endpoint">{session.endpoint}</code></>}
         <p>В Minecraft Java откройте «Сетевая игра», добавьте сервер и вставьте этот адрес. Доступность мира проверяется при подключении Minecraft.</p>
-        <form className="minecraft-join" onSubmit={joinMinecraft}>
+        <div className="minecraft-join">
           <h3>Войти через мод BlockOps</h3>
-          <p>Для экспериментального мода Fabric 1.21.1: в главном меню Minecraft нажмите BlockOps, скопируйте код и вставьте его сюда. Код действует один раз — не передавайте его другим.</p>
-          <label htmlFor="pairing-code">Код сопряжения с Minecraft</label>
-          <input id="pairing-code" type="password" maxLength={70} autoComplete="off" spellCheck={false} value={pairingCode} onChange={e => setPairingCode(e.target.value)} disabled={busy}/>
-          <button className="primary" disabled={!desktop || busy || !pairingCode.trim()}>Войти в мир</button>
+          <p>С экспериментальным модом Fabric 1.21.1 откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.</p>
+          <button type="button" className="primary" disabled={!desktop || busy} onClick={() => void joinMinecraft(null)}>Войти в мир</button>
           {joinFeedback && <p role="status">{joinFeedback}</p>}
-        </form>
+          <details>
+            <summary>Ввести код мода вручную</summary>
+            <p>Если Minecraft не находится, в главном меню игры нажмите BlockOps, скопируйте код и вставьте его сюда. Код действует один раз — не передавайте его другим.</p>
+            <form onSubmit={e => { e.preventDefault(); const code = pairingCode.trim(); if (code) void joinMinecraft(code); }}>
+              <label htmlFor="pairing-code">Код сопряжения с Minecraft</label>
+              <input id="pairing-code" type="password" maxLength={70} autoComplete="off" spellCheck={false} value={pairingCode} onChange={e => setPairingCode(e.target.value)} disabled={busy}/>
+              <button disabled={!desktop || busy || !pairingCode.trim()}>Войти по коду</button>
+            </form>
+          </details>
+        </div>
       </>}
       {session.last_error && <p role="alert" className="error">{explainError(session.last_error)}</p>}
       <details><summary>Состояние соединения</summary>
