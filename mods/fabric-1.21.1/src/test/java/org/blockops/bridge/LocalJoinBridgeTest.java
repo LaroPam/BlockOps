@@ -1,6 +1,8 @@
 package org.blockops.bridge;
 
 import java.net.URI;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -9,6 +11,7 @@ import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Executable without Minecraft, Fabric, third-party test frameworks, or internet access. */
 public final class LocalJoinBridgeTest {
@@ -69,6 +72,46 @@ public final class LocalJoinBridgeTest {
         try (var bridge = new LocalJoinBridge(port -> false, () -> 0, Duration.ofSeconds(30))) {
             check(world(bridge, bridge.token()).statusCode() == 409, "closed world reported as open");
         }
+        var watchedPort = new AtomicInteger(43210);
+        try (var bridge = new LocalJoinBridge(port -> false, watchedPort::get, Duration.ofSeconds(30))) {
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + bridge.port() + "/v1/watch-world"))
+                .timeout(Duration.ofSeconds(8)).header("Authorization", "Bearer " + bridge.token())
+                .POST(HttpRequest.BodyPublishers.noBody()).build();
+            var response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            check(response.statusCode() == 200, "watch rejected");
+            try (var reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.US_ASCII))) {
+                check("W 43210".equals(reader.readLine()), "missing initial world port");
+                watchedPort.set(0);
+                var result = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try {
+                        String line;
+                        while ("A".equals(line = reader.readLine())) { /* buffered heartbeat */ }
+                        return line;
+                    } catch (Exception failure) { throw new RuntimeException(failure); }
+                });
+                check("C".equals(result.get(5, TimeUnit.SECONDS)), "world closure not reported");
+            }
+        }
+        var identity = new WorldIdentity<Object>();
+        Object firstWorld = new Object();
+        Object secondWorld = new Object();
+        var currentWorld = new AtomicReference<>(firstWorld);
+        try (var bridge = new LocalJoinBridge(port -> false,
+                () -> identity.accepts(currentWorld.get()) ? 43210 : 0, Duration.ofSeconds(30))) {
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + bridge.port() + "/v1/watch-world"))
+                .timeout(Duration.ofSeconds(8)).header("Authorization", "Bearer " + bridge.token())
+                .POST(HttpRequest.BodyPublishers.noBody()).build();
+            var response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            try (var reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.US_ASCII))) {
+                check("W 43210".equals(reader.readLine()), "missing initial world port");
+                currentWorld.set(secondWorld); // A new world using the same port must not retain access.
+                var result = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try { String line; while ("A".equals(line = reader.readLine())) {} return line; }
+                    catch (Exception failure) { throw new RuntimeException(failure); }
+                });
+                check("C".equals(result.get(5, TimeUnit.SECONDS)), "different world with same port was not closed");
+            }
+        }
         var calls = new AtomicInteger();
         try (var bridge = new LocalJoinBridge(port -> { calls.incrementAndGet(); return true; }, Duration.ofSeconds(30))) {
             var one = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
@@ -118,6 +161,25 @@ public final class LocalJoinBridgeTest {
                     if (process.exitValue() != 0) {
                         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).replace(bridge.token(), "[redacted]");
                         throw new AssertionError("Rust world detection failed: " + output);
+                    }
+                } finally { if (process.isAlive()) process.destroyForcibly(); }
+            }
+        }
+        if (rustClient != null && !rustClient.isBlank()) {
+            var port = new AtomicInteger(43210);
+            var callsToWorld = new AtomicInteger();
+            try (var bridge = new LocalJoinBridge(value -> false, () -> { int current = port.get(); callsToWorld.incrementAndGet(); return current; }, Duration.ofSeconds(30))) {
+                Process process = new ProcessBuilder(rustClient, Integer.toString(bridge.port()), "43210", "watch").redirectErrorStream(true).start();
+                try {
+                    try (var stdin = process.getOutputStream()) { stdin.write((bridge.token() + "\n").getBytes(StandardCharsets.US_ASCII)); }
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (callsToWorld.get() == 0 && System.nanoTime() < deadline) Thread.sleep(20);
+                    check(callsToWorld.get() > 0, "Rust watch did not start");
+                    port.set(0);
+                    check(process.waitFor(10, TimeUnit.SECONDS), "Rust watch did not observe closure");
+                    if (process.exitValue() != 0) {
+                        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).replace(bridge.token(), "[redacted]");
+                        throw new AssertionError("Rust watch failed: " + output);
                     }
                 } finally { if (process.isAlive()) process.destroyForcibly(); }
             }

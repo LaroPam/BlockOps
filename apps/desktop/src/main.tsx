@@ -25,6 +25,7 @@ function explainError(error: unknown): string {
 function App() {
   const [mode, setMode] = useState<'host' | 'join'>('host');
   const [lanPort, setLanPort] = useState('');
+  const [worldWatchId, setWorldWatchId] = useState<number | null>(null);
   const [hostPairingCode, setHostPairingCode] = useState('');
   const [worldFeedback, setWorldFeedback] = useState('');
   const [worldError, setWorldError] = useState('');
@@ -46,6 +47,25 @@ function App() {
     const timer = setInterval(poll, 1000);
     return () => clearInterval(timer);
   }, [desktop]);
+
+  useEffect(() => {
+    if (!desktop || worldWatchId === null) return;
+    let active = true;
+    const check = () => invoke<boolean>('world_watch_alive', { id: worldWatchId }).then(alive => {
+      if (active && !alive) {
+        setWorldWatchId(null); setLanPort(''); setWorldFeedback('');
+        setWorldError('Мир закрыт или связь с модом потеряна. BlockOps останавливает соединение; определите порт заново.');
+      }
+    }).catch(() => {
+      if (active) {
+        setWorldWatchId(null); setLanPort(''); setWorldFeedback('');
+        setWorldError('Не удалось проверить состояние мира. Определите порт заново.');
+      }
+    });
+    void check();
+    const timer = setInterval(check, 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, [desktop, worldWatchId]);
 
   const refreshSession = async () => {
     try {
@@ -71,10 +91,10 @@ function App() {
     if (!code) return;
     setHostPairingCode(''); setBusy(true); setWorldError(''); setWorldFeedback('');
     try {
-      const port = await invoke<number>('detect_open_world', { pairingCode: code });
-      setLanPort(String(port));
-      setWorldFeedback('Порт получен из Minecraft. Пока мир открыт, можно подготовить приглашение.');
-    } catch (failure) { setWorldError(String(failure)); }
+      const world = await invoke<{id:number;port:number}>('detect_open_world', { pairingCode: code });
+      setWorldWatchId(world.id); setLanPort(String(world.port));
+      setWorldFeedback('Порт получен из Minecraft. BlockOps отслеживает, открыт ли мир.');
+    } catch (failure) { setWorldWatchId(null); setLanPort(''); setWorldError(String(failure)); }
     finally { setBusy(false); }
   }
 
@@ -82,7 +102,7 @@ function App() {
     e.preventDefault();
     setBusy(true);
     setError('');
-    try { const port = Number(lanPort); if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Укажите порт от 1 до 65535.'); setSession(await invoke<Session>('host', { target: `127.0.0.1:${port}`, relay: relay.trim() || null })); window.setTimeout(() => sessionRef.current?.scrollIntoView({ behavior: 'auto' }), 100); }
+    try { const port = Number(lanPort); if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Укажите порт от 1 до 65535.'); setSession(await invoke<Session>('host', { target: `127.0.0.1:${port}`, relay: relay.trim() || null, worldWatchId })); window.setTimeout(() => sessionRef.current?.scrollIntoView({ behavior: 'auto' }), 100); }
     catch (e) { setError(explainError(e)); }
     finally { setBusy(false); }
   }
@@ -102,7 +122,7 @@ function App() {
   async function stop() {
     setBusy(true);
     setError('');
-    try { await invoke('stop'); setSession(null); setPairingCode(''); setHostPairingCode(''); setLanPort(''); setWorldFeedback(''); setJoinFeedback(''); }
+    try { await invoke('stop'); setSession(null); setPairingCode(''); setHostPairingCode(''); setWorldWatchId(null); setLanPort(''); setWorldFeedback(''); setJoinFeedback(''); }
     catch (e) { setError(explainError(e)); }
     finally { setBusy(false); }
   }
@@ -150,8 +170,8 @@ function App() {
         </details>
         <form onSubmit={startExternal}>
           <label htmlFor="lan-port">Порт мира Minecraft</label>
-          <input id="lan-port" type="number" min={1} max={65535} step={1} required value={lanPort} onChange={e => {setLanPort(e.target.value);setWorldFeedback('');}} placeholder="Из мода или сообщения Minecraft" disabled={busy || session !== null}/>
-          <p>Открывая мир для сети, вы также делаете его доступным в вашей локальной сети согласно настройкам Minecraft и Windows. Закрывая мир, отключите соединение в BlockOps: после закрытия этот порт может занять другая программа.</p>
+          <input id="lan-port" type="number" min={1} max={65535} step={1} required value={lanPort} onChange={e => {setLanPort(e.target.value);setWorldWatchId(null);setWorldFeedback('');}} placeholder="Из мода или сообщения Minecraft" disabled={busy || session !== null}/>
+          <p>Открывая мир для сети, вы также делаете его доступным в вашей локальной сети согласно настройкам Minecraft и Windows. {worldWatchId === null ? 'Если порт указан вручную, отключите соединение после закрытия мира.' : 'BlockOps остановит соединение при обнаружении закрытия мира или потери связи с модом. Проверка выполняется с задержкой, поэтому после выхода из мира остановите соединение сразу.'}</p>
           <button className="primary" disabled={!desktop || busy || session !== null}>{busy ? 'Подготавливаем соединение…' : 'Подготовить приглашение'}</button>
           {session && <p>Чтобы открыть другой мир, сначала отключите текущее соединение.</p>}
         </form>

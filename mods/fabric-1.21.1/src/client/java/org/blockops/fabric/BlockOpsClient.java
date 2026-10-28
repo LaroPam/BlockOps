@@ -17,8 +17,10 @@ import net.minecraft.client.gui.screen.multiplayer.ConnectScreen;
 import net.minecraft.client.gui.screen.multiplayer.MultiplayerScreen;
 import net.minecraft.client.network.ServerAddress;
 import net.minecraft.client.network.ServerInfo;
+import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.text.Text;
 import org.blockops.bridge.LocalJoinBridge;
+import org.blockops.bridge.WorldIdentity;
 
 /** Client-only companion. A bridge opens only after a local player requests pairing. */
 public final class BlockOpsClient implements ClientModInitializer {
@@ -39,7 +41,8 @@ public final class BlockOpsClient implements ClientModInitializer {
 
     static synchronized String startPairing() throws IOException {
         stopPairing();
-        bridge = new LocalJoinBridge(BlockOpsClient::startJoin, BlockOpsClient::openWorldPort, Duration.ofMinutes(5));
+        WorldIdentity<IntegratedServer> watchedWorld = new WorldIdentity<>();
+        bridge = new LocalJoinBridge(BlockOpsClient::startJoin, () -> openWorldPort(watchedWorld), Duration.ofMinutes(5));
         return bridge.port() + ":" + bridge.token();
     }
 
@@ -47,7 +50,7 @@ public final class BlockOpsClient implements ClientModInitializer {
         if (bridge != null) { bridge.close(); bridge = null; }
     }
 
-    private static int openWorldPort() {
+    private static int openWorldPort(WorldIdentity<IntegratedServer> watchedWorld) {
         MinecraftClient client = MinecraftClient.getInstance();
         CompletableFuture<Integer> result = new CompletableFuture<>();
         AtomicBoolean pending = new AtomicBoolean(true);
@@ -56,7 +59,9 @@ public final class BlockOpsClient implements ClientModInitializer {
             var server = client.getServer();
             if (client.world == null || server == null || !server.isRemote()) { result.complete(0); return; }
             int port = server.getServerPort();
-            result.complete(port >= 1 && port <= 65535 ? port : 0);
+            if (port < 1 || port > 65535) { result.complete(0); return; }
+            if (!watchedWorld.accepts(server)) { result.complete(0); return; }
+            result.complete(port);
         });
         try { return result.get(3, TimeUnit.SECONDS); }
         catch (Exception failure) { pending.set(false); return 0; }

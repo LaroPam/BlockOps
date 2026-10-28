@@ -34,6 +34,18 @@ async fn main() -> Result<()> {
             ensure!(port == target_port, "Unexpected world port");
             Ok(())
         }
+        "watch" => {
+            let mut watch = blockops_coordination::local_bridge::watch_world(&code).await?;
+            ensure!(watch.port == target_port, "Unexpected watched world port");
+            tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                while *watch.alive.borrow() {
+                    watch.alive.changed().await?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+            Ok(())
+        }
         _ => anyhow::bail!("Invalid test mode"),
     }
 }

@@ -210,6 +210,7 @@ pub async fn invite_server(
         format!("127.0.0.1:{}", server.settings.port),
         relay,
         Some(format!("{id}:{}", process.generation)),
+        None,
     )
     .await
 }

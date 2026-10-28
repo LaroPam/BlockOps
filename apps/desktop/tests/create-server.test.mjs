@@ -59,9 +59,11 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     const lan = await browser.newPage();
     await lan.addInitScript(() => {
       window.__calls = [];
+      window.__worldAlive = true;
       let session = null;
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-        if (command === 'detect_open_world') { window.__detection = args; return 54321; }
+        if (command === 'detect_open_world') { window.__detection = args; return { id: 7, port: 54321 }; }
+        if (command === 'world_watch_alive') return window.__worldAlive;
         if (command === 'host') {
           window.__calls.push(args);
           session = { mode: 'host', endpoint: null, active_connections: 0, last_error: null, transport: null };
@@ -88,7 +90,11 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     const [hostArgs] = await lan.evaluate(() => window.__calls);
     assert.equal(hostArgs.target, '127.0.0.1:54321');
     assert.equal(hostArgs.relay, null);
+    assert.equal(hostArgs.worldWatchId, 7);
     await lan.getByRole('button', { name: 'Создать одноразовый код' }).waitFor();
+    await lan.evaluate(() => { window.__worldAlive = false; });
+    await lan.getByText(/Мир закрыт или связь с модом потеряна/).waitFor();
+    assert.equal(await portInput.inputValue(), '');
     await lan.close();
     const joinPage = await browser.newPage();
     await joinPage.addInitScript(() => {
