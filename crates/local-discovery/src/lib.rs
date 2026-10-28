@@ -14,12 +14,23 @@ const MAX_ENTRIES: usize = 64;
 /// The mod advertises a bridge for under five minutes; anything longer is not trusted.
 const MAX_LIFETIME_SECS: u64 = 600;
 
+/// What the game reported doing: a hint for when to ask, never a security decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameState {
+    /// A single-player world is open to LAN.
+    Lan,
+    /// Title or multiplayer screen: Minecraft can start joining a server.
+    Menu,
+    Busy,
+}
+
 /// Contains a secret: deliberately not Debug or Serialize.
 pub struct Descriptor {
     pub pid: u32,
     pub port: u16,
     pub token: [u8; 32],
     pub expires_at: u64,
+    pub state: GameState,
 }
 #[cfg(any(windows, test))]
 #[derive(Deserialize)]
@@ -30,6 +41,7 @@ struct RawDescriptor {
     port: u16,
     token: String,
     expires_at: u64,
+    state: String,
 }
 #[cfg(any(windows, test))]
 fn parse(data: &[u8]) -> Result<Descriptor> {
@@ -37,9 +49,15 @@ fn parse(data: &[u8]) -> Result<Descriptor> {
     let raw: RawDescriptor =
         serde_json::from_slice(data).map_err(|_| anyhow::anyhow!("Invalid descriptor"))?;
     ensure!(
-        raw.version == 1 && raw.pid != 0 && raw.port != 0 && raw.expires_at != 0,
+        raw.version == 2 && raw.pid != 0 && raw.port != 0 && raw.expires_at != 0,
         "Invalid descriptor"
     );
+    let state = match raw.state.as_str() {
+        "lan" => GameState::Lan,
+        "menu" => GameState::Menu,
+        "busy" => GameState::Busy,
+        _ => anyhow::bail!("Invalid descriptor"),
+    };
     ensure!(
         raw.token.len() == 64 && raw.token.bytes().all(|b| b.is_ascii_hexdigit()),
         "Invalid descriptor"
@@ -53,6 +71,7 @@ fn parse(data: &[u8]) -> Result<Descriptor> {
         port: raw.port,
         token,
         expires_at: raw.expires_at,
+        state,
     })
 }
 
@@ -133,7 +152,7 @@ mod tests {
     #[test]
     fn parses_valid_descriptor_and_rejects_extra_fields() {
         let valid = format!(
-            r#"{{"version":1,"pid":42,"port":25565,"token":"{}","expires_at":123}}"#,
+            r#"{{"version":2,"pid":42,"port":25565,"token":"{}","expires_at":123,"state":"lan"}}"#,
             "ab".repeat(32)
         );
         let descriptor = parse(valid.as_bytes()).unwrap();
@@ -141,8 +160,19 @@ mod tests {
         assert_eq!(descriptor.port, 25565);
         assert_eq!(descriptor.token, [0xab; 32]);
         assert_eq!(descriptor.expires_at, 123);
-        let extra = valid.replacen("{", "{\"extra\":true,", 1);
-        assert!(parse(extra.as_bytes()).is_err());
+        assert_eq!(descriptor.state, GameState::Lan);
+        for state in ["menu", "busy"] {
+            let other = valid.replace("\"lan\"", &format!("\"{state}\""));
+            assert!(parse(other.as_bytes()).is_ok());
+        }
+        for invalid in [
+            valid.replacen("{", "{\"extra\":true,", 1),
+            valid.replace("\"lan\"", "\"LAN\""),
+            valid.replace(",\"state\":\"lan\"", ""),
+            valid.replace("\"version\":2", "\"version\":1"),
+        ] {
+            assert!(parse(invalid.as_bytes()).is_err(), "{invalid}");
+        }
         assert!(parse(&vec![b' '; 4097]).is_err());
     }
     #[test]
@@ -150,7 +180,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let write = |name: &str, port: u16, expires_at: u64| {
             let json = format!(
-                r#"{{"version":1,"pid":7,"port":{port},"token":"{}","expires_at":{expires_at}}}"#,
+                r#"{{"version":2,"pid":7,"port":{port},"token":"{}","expires_at":{expires_at},"state":"menu"}}"#,
                 "cd".repeat(32)
             );
             std::fs::write(directory.path().join(name), json).unwrap();
@@ -172,7 +202,8 @@ mod tests {
     fn malformed_descriptors_do_not_echo_secrets() {
         for bytes in [
             b"{bad secret}".as_slice(),
-            br#"{"version":1,"pid":1,"port":2,"token":"secret","expires_at":1}"#.as_slice(),
+            br#"{"version":2,"pid":1,"port":2,"token":"secret","expires_at":1,"state":"lan"}"#
+                .as_slice(),
         ] {
             let error = match parse(bytes) {
                 Ok(_) => panic!("invalid descriptor accepted"),

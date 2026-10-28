@@ -11,7 +11,8 @@ checks its owner and a protected, owner-only DACL on the open handle, and reads
 at most 4097 bytes. It fails closed for other ACLs. This protects against other
 Windows users, not software already running as the same user or an administrator.
 `discover` also drops expired descriptors, implausibly long lifetimes and those whose
-process has exited. A reused process id can still pass; the bridge's response proof,
+process has exited. Each descriptor (format version 2) reports the game state the mod
+observed; the desktop polls it to know when to ask, but never treats it as authorization. A reused process id can still pass; the bridge's response proof,
 not the descriptor, decides whether the desktop trusts an endpoint.
 
 The mod's writer and this reader are tested against each other on Windows CI, including

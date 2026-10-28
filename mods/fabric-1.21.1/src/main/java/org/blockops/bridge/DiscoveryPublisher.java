@@ -8,15 +8,30 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * Keeps one unused bridge advertised through a private descriptor, so the desktop on the
  * same computer can find Minecraft without a copied code. A spent or nearly expired bridge
- * is replaced; a replaced bridge stays open only while it still serves a world watch.
+ * is replaced; a replaced bridge stays open only while it still serves a world watch. The
+ * descriptor also carries what the game is doing, so the desktop can wait for the right
+ * moment without spending bridges.
  */
 public final class DiscoveryPublisher implements AutoCloseable {
+    /** A hint for the desktop, never a security decision: the bridge rechecks on each request. */
+    public enum GameState {
+        /** A single-player world is open to LAN. */
+        LAN,
+        /** Title or multiplayer screen: Minecraft can start joining a server. */
+        MENU,
+        BUSY;
+
+        String wire() { return name().toLowerCase(Locale.ROOT); }
+    }
+
     /** Where the descriptor goes; it must become readable by this user only before any secret is written. */
     public interface Store {
         void publish(byte[] descriptor) throws IOException;
@@ -25,44 +40,65 @@ public final class DiscoveryPublisher implements AutoCloseable {
 
     static final Duration MARGIN = Duration.ofSeconds(30);
     private final Callable<LocalJoinBridge> factory;
+    private final Supplier<GameState> state;
     private final Store store;
     private final long pid;
     private final LongSupplier epochSeconds;
     private final List<LocalJoinBridge> retired = new ArrayList<>();
     private LocalJoinBridge current;
+    private GameState published;
     private boolean closed;
 
-    public DiscoveryPublisher(Callable<LocalJoinBridge> factory, Store store) {
-        this(factory, store, ProcessHandle.current().pid(), () -> System.currentTimeMillis() / 1000);
+    public DiscoveryPublisher(Callable<LocalJoinBridge> factory, Supplier<GameState> state, Store store) {
+        this(factory, state, store, ProcessHandle.current().pid(), () -> System.currentTimeMillis() / 1000);
     }
 
-    DiscoveryPublisher(Callable<LocalJoinBridge> factory, Store store, long pid, LongSupplier epochSeconds) {
-        if (factory == null || store == null || pid <= 0 || pid > 0xffffffffL || epochSeconds == null) {
+    DiscoveryPublisher(Callable<LocalJoinBridge> factory, Supplier<GameState> state, Store store, long pid,
+            LongSupplier epochSeconds) {
+        if (factory == null || state == null || store == null || pid <= 0 || pid > 0xffffffffL || epochSeconds == null) {
             throw new IllegalArgumentException("Invalid discovery publisher");
         }
         this.factory = factory;
+        this.state = state;
         this.store = store;
         this.pid = pid;
         this.epochSeconds = epochSeconds;
     }
 
-    /** Call periodically. Replaces the advertised bridge once it is used or about to expire. */
+    /**
+     * Call periodically. Replaces the advertised bridge once it is used or about to expire,
+     * and rewrites the descriptor when the game state changes.
+     */
     public synchronized void refresh() throws Exception {
         if (closed) return;
         retired.removeIf(LocalJoinBridge::isClosed);
-        if (current != null && !current.isSpent() && current.remaining().compareTo(MARGIN) > 0) return;
+        GameState observed = state.get();
+        GameState now = observed == null ? GameState.BUSY : observed;
+        boolean fresh = current != null && !current.isSpent() && current.remaining().compareTo(MARGIN) > 0;
+        if (fresh) {
+            if (now != published) {
+                publish(current, now);
+                published = now;
+            }
+            return;
+        }
         LocalJoinBridge next = factory.call();
         try {
-            long expiresAt = epochSeconds.getAsLong() + next.remaining().minus(MARGIN).toSeconds();
-            String json = "{\"version\":1,\"pid\":" + pid + ",\"port\":" + next.port() + ",\"token\":\""
-                + next.token() + "\",\"expires_at\":" + expiresAt + "}";
-            store.publish(json.getBytes(StandardCharsets.US_ASCII));
+            publish(next, now);
         } catch (Exception | Error failure) {
             next.close();
             throw failure;
         }
         if (current != null) retired.add(current);
         current = next;
+        published = now;
+    }
+
+    private void publish(LocalJoinBridge bridge, GameState now) throws IOException {
+        long expiresAt = epochSeconds.getAsLong() + bridge.remaining().minus(MARGIN).toSeconds();
+        String json = "{\"version\":2,\"pid\":" + pid + ",\"port\":" + bridge.port() + ",\"token\":\""
+            + bridge.token() + "\",\"expires_at\":" + expiresAt + ",\"state\":\"" + now.wire() + "\"}";
+        store.publish(json.getBytes(StandardCharsets.US_ASCII));
     }
 
     /**

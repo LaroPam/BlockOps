@@ -201,3 +201,7 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .world-detection { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 18px 0; padding: 4px 0 8px; }
 .world-detection button, .minecraft-join details button { margin-top: 16px; }
 .world-detection details, .minecraft-join details { margin-top: 8px; }
+
+.invite-code { padding: 8px 0 16px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+.invite-code code { padding: 8px 0 0; font-size: 22px; }
+.code-actions { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -228,6 +228,44 @@ async fn companions() -> Vec<blockops_local_discovery::Descriptor> {
         .unwrap_or_default()
 }
 
+/// Companions whose state hint matches, or all of them when none does: the hint can lag
+/// the game by a second, and the bridge checks the real state on each request anyway.
+fn prefer(
+    found: &[blockops_local_discovery::Descriptor],
+    state: blockops_local_discovery::GameState,
+) -> Vec<&blockops_local_discovery::Descriptor> {
+    let matching: Vec<_> = found
+        .iter()
+        .filter(|companion| companion.state == state)
+        .collect();
+    if matching.is_empty() {
+        found.iter().collect()
+    } else {
+        matching
+    }
+}
+
+#[derive(Serialize)]
+struct LocalMinecraft {
+    running: usize,
+    open_worlds: usize,
+    in_menu: usize,
+}
+
+/// What Minecraft with the mod reports doing on this computer. Reads only the private
+/// descriptors and spends no bridge, so the interface can poll it.
+#[tauri::command]
+async fn local_minecraft() -> Result<LocalMinecraft, String> {
+    use blockops_local_discovery::GameState;
+    let found = companions().await;
+    let count = |state| found.iter().filter(|c| c.state == state).count();
+    Ok(LocalMinecraft {
+        running: found.len(),
+        open_worlds: count(GameState::Lan),
+        in_menu: count(GameState::Menu),
+    })
+}
+
 /// Ask each discovered companion for an open world; exactly one must have it.
 async fn find_open_world() -> Result<blockops_coordination::local_bridge::WorldWatch, String> {
     let found = companions().await;
@@ -235,7 +273,7 @@ async fn find_open_world() -> Result<blockops_coordination::local_bridge::WorldW
         return Err(NO_COMPANION.into());
     }
     let mut worlds = Vec::new();
-    for companion in &found {
+    for companion in prefer(&found, blockops_local_discovery::GameState::Lan) {
         // Each probe uses up that bridge; the mod advertises a fresh one within a second.
         if let Ok(watch) =
             blockops_coordination::local_bridge::watch_world_at(companion.port, &companion.token)
@@ -277,7 +315,8 @@ async fn join_in_minecraft(
         .ok_or("Локальный адрес гостевого туннеля недоступен")?;
     let Some(pairing_code) = pairing_code else {
         let found = companions().await;
-        let companion = match found.as_slice() {
+        let candidates = prefer(&found, blockops_local_discovery::GameState::Menu);
+        let companion = match candidates.as_slice() {
             [] => return Err(NO_COMPANION.into()),
             [companion] => companion,
             _ => return Err("Запущено несколько копий Minecraft с модом BlockOps. Оставьте одну или введите код мода вручную.".into()),
@@ -485,6 +524,7 @@ fn main() {
             join_in_minecraft,
             detect_open_world,
             world_watch_alive,
+            local_minecraft,
             open_eula,
             discover_minecraft_profiles,
             get_minecraft_selection,

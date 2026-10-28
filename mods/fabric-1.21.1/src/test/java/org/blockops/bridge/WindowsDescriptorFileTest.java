@@ -11,8 +11,9 @@ import java.util.concurrent.TimeUnit;
 /** Windows only: the mod's writer against the desktop's owner-only reader and discovery. */
 public final class WindowsDescriptorFileTest {
     private static byte[] descriptor(long pid, int port, String token) {
-        return ("{\"version\":1,\"pid\":" + pid + ",\"port\":" + port + ",\"token\":\"" + token
-            + "\",\"expires_at\":" + (System.currentTimeMillis() / 1000 + 120) + "}").getBytes(StandardCharsets.US_ASCII);
+        return ("{\"version\":2,\"pid\":" + pid + ",\"port\":" + port + ",\"token\":\"" + token
+            + "\",\"expires_at\":" + (System.currentTimeMillis() / 1000 + 120) + ",\"state\":\"lan\"}")
+            .getBytes(StandardCharsets.US_ASCII);
     }
 
     /** Runs a Rust test program; a secret goes only through stdin and is redacted from failures. */
@@ -66,7 +67,7 @@ public final class WindowsDescriptorFileTest {
             // The whole path: publisher -> private file -> Rust discovery -> proven world port.
             try (var publisher = new DiscoveryPublisher(
                     () -> new LocalJoinBridge(port -> false, () -> 43210, Duration.ofMinutes(5)),
-                    new WindowsDescriptorFile(directory, pid))) {
+                    () -> DiscoveryPublisher.GameState.LAN, new WindowsDescriptorFile(directory, pid))) {
                 publisher.refresh();
                 result = run("", client, "discover", directory.toString(), "43210");
                 check(result.isEmpty(), "Rust discovery failed: " + result);

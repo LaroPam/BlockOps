@@ -39,12 +39,15 @@ public final class BlockOpsClient implements ClientModInitializer {
     private static DiscoveryPublisher discovery;
     private static ScheduledExecutorService discoveryTimer;
     private static final AtomicBoolean openPairing = new AtomicBoolean();
+    /** Observed on the client thread, read by the discovery thread. */
+    private static volatile DiscoveryPublisher.GameState gameState = DiscoveryPublisher.GameState.BUSY;
 
     @Override public void onInitializeClient() {
         startDiscovery();
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> { stopPairing(); stopDiscovery(); });
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (openPairing.compareAndSet(true, false)) client.setScreen(new PairingScreen(null));
+            gameState = observeState(client);
         });
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
             dispatcher.register(ClientCommandManager.literal("blockops").executes(context -> {
@@ -71,7 +74,7 @@ public final class BlockOpsClient implements ClientModInitializer {
             discovery = new DiscoveryPublisher(() -> {
                 WorldIdentity<IntegratedServer> watchedWorld = new WorldIdentity<>();
                 return new LocalJoinBridge(BlockOpsClient::startJoin, () -> openWorldPort(watchedWorld), Duration.ofMinutes(5));
-            }, store);
+            }, () -> gameState, store);
         } catch (IOException | RuntimeException | LinkageError failure) {
             LOGGER.warn("BlockOps automatic discovery is unavailable; use the pairing code instead");
             return;
@@ -99,6 +102,20 @@ public final class BlockOpsClient implements ClientModInitializer {
         if (discovery != null) { discovery.close(); discovery = null; }
     }
 
+    /** Mirrors the checks of {@link #openWorldPort} and {@link #startJoin}, which still decide. */
+    private static DiscoveryPublisher.GameState observeState(MinecraftClient client) {
+        var server = client.getServer();
+        if (client.world != null && server != null && server.isRemote()) return DiscoveryPublisher.GameState.LAN;
+        if (client.world == null && client.isMultiplayerEnabled() && joinableScreen(client.currentScreen)) {
+            return DiscoveryPublisher.GameState.MENU;
+        }
+        return DiscoveryPublisher.GameState.BUSY;
+    }
+
+    private static boolean joinableScreen(Screen screen) {
+        return screen instanceof TitleScreen || screen instanceof MultiplayerScreen || screen instanceof PairingScreen;
+    }
+
     private static int openWorldPort(WorldIdentity<IntegratedServer> watchedWorld) {
         MinecraftClient client = MinecraftClient.getInstance();
         CompletableFuture<Integer> result = new CompletableFuture<>();
@@ -122,7 +139,7 @@ public final class BlockOpsClient implements ClientModInitializer {
         AtomicBoolean pending = new AtomicBoolean(true);
         client.execute(() -> {
             if (!pending.compareAndSet(true, false)) return;
-            if (!client.isMultiplayerEnabled() || client.world != null || !(client.currentScreen instanceof TitleScreen || client.currentScreen instanceof MultiplayerScreen || client.currentScreen instanceof PairingScreen)) {
+            if (!client.isMultiplayerEnabled() || client.world != null || !joinableScreen(client.currentScreen)) {
                 result.complete(false);
                 return;
             }

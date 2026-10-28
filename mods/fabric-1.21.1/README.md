@@ -28,8 +28,11 @@ Building it does not establish that it works in a real Minecraft client.
 While the game runs, the mod keeps one unused bridge advertised in
 `%LOCALAPPDATA%\BlockOps\discovery\minecraft-<pid>.json`. The file is created with an
 explicit owner and a protected DACL that allows only the current Windows user, before any
-secret is written, then renamed into place. It holds the bridge port and a 256-bit one-use
-secret valid for under five minutes. A used or nearly expired bridge is replaced within a
+secret is written, then renamed into place. It holds the bridge port, a 256-bit one-use
+secret valid for under five minutes and the game state (`lan`, `menu` or `busy`), observed
+on the client thread. The state is only a hint for when the desktop should ask: the bridge
+checks the real state on every request, and a state change rewrites the descriptor without
+spending the bridge. A used or nearly expired bridge is replaced within a
 second; the file is removed when the game stops, and files older than ten minutes are removed
 at the next start. The writer calls WinAPI through the JNA library that Minecraft already
 ships, so nothing extra is bundled.
