@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import './style.css';
 import { Servers } from './Servers';
 import { Codes } from './Codes';
+import { MinecraftProfiles } from './MinecraftProfiles';
 
 type Session = {
   mode: string;
@@ -146,6 +147,7 @@ function App() {
       </details>
       <button type="button" disabled={busy} onClick={stop}>Отключить соединение</button>
     </section>}
+    <MinecraftProfiles desktop={desktop}/>
     <details className="advanced">
       <summary>Дополнительные настройки подключения</summary>
       <p>В этой версии публичные сервисы BlockOps ещё не развёрнуты. Для игры через интернет нужны адреса вашего сервиса координации и relay. Для проверки на одном компьютере можно оставить локальные настройки.</p>
