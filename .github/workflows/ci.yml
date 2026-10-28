@@ -93,7 +93,15 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Build local bridge test client
+        working-directory: .
+        run: cargo build -p blockops-coordination --example local_bridge_smoke --locked
       - name: Build client mod
+        env:
+          BLOCKOPS_BRIDGE_TEST_CLIENT: ${{ github.workspace }}/target/debug/examples/local_bridge_smoke
         run: |
           if ! ./gradlew --no-daemon build > /tmp/blockops-fabric-build.log 2>&1; then
             tail -80 /tmp/blockops-fabric-build.log
