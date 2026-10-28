@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Executable without Minecraft, Fabric, third-party test frameworks, or internet access. */
 public final class LocalJoinBridgeTest {
@@ -89,6 +90,26 @@ public final class LocalJoinBridgeTest {
                     } catch (Exception failure) { throw new RuntimeException(failure); }
                 });
                 check("C".equals(result.get(5, TimeUnit.SECONDS)), "world closure not reported");
+            }
+        }
+        var identity = new WorldIdentity<Object>();
+        Object firstWorld = new Object();
+        Object secondWorld = new Object();
+        var currentWorld = new AtomicReference<>(firstWorld);
+        try (var bridge = new LocalJoinBridge(port -> false,
+                () -> identity.accepts(currentWorld.get()) ? 43210 : 0, Duration.ofSeconds(30))) {
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + bridge.port() + "/v1/watch-world"))
+                .timeout(Duration.ofSeconds(8)).header("Authorization", "Bearer " + bridge.token())
+                .POST(HttpRequest.BodyPublishers.noBody()).build();
+            var response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            try (var reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.US_ASCII))) {
+                check("W 43210".equals(reader.readLine()), "missing initial world port");
+                currentWorld.set(secondWorld); // A new world using the same port must not retain access.
+                var result = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try { String line; while ("A".equals(line = reader.readLine())) {} return line; }
+                    catch (Exception failure) { throw new RuntimeException(failure); }
+                });
+                check("C".equals(result.get(5, TimeUnit.SECONDS)), "different world with same port was not closed");
             }
         }
         var calls = new AtomicInteger();
