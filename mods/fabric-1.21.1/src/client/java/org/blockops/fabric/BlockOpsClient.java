@@ -48,7 +48,7 @@ public final class BlockOpsClient implements ClientModInitializer {
         AtomicBoolean pending = new AtomicBoolean(true);
         client.execute(() -> {
             if (!pending.compareAndSet(true, false)) return;
-            if (client.world != null || !(client.currentScreen instanceof TitleScreen || client.currentScreen instanceof MultiplayerScreen || client.currentScreen instanceof PairingScreen)) {
+            if (!client.isMultiplayerEnabled() || client.world != null || !(client.currentScreen instanceof TitleScreen || client.currentScreen instanceof MultiplayerScreen || client.currentScreen instanceof PairingScreen)) {
                 result.complete(false);
                 return;
             }
