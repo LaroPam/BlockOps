@@ -35,7 +35,7 @@ npm run desktop
 
 For a Windows installer: `npm run tauri -w apps/desktop -- build`. This targets NSIS;
 code signing and release distribution are not configured. Do not distribute this PoC as a
-finished hosting product. The Windows CI job builds an unsigned NSIS installer and smoke-tests installation and removal. It does not exercise the native GUI or a real Minecraft session.
+finished hosting product. The Windows CI job builds an unsigned NSIS installer and smoke-tests installation, native window startup, close and removal. It does not exercise interactions in the GUI or a real Minecraft session.
 
 ## Manual three-process tunnel
 

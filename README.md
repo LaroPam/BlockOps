@@ -59,7 +59,7 @@ The network core and an actual installed Vanilla server were tested in this clou
 Minecraft status and ping/pong passed through the relay; authenticated player login is not
 verified because Vanilla authlib bypasses the required cloud HTTPS proxy and direct DNS fails. Desktop native compilation is
 blocked in the Linux development container by missing GLib/GTK/WebKit development libraries.
-Windows CI builds an unsigned installer and tests silent installation and removal; interactive
+Windows CI builds an unsigned installer and tests silent installation, native window startup and removal; interactive
 Windows GUI use and authenticated Minecraft player login still need manual validation.
 
 ## Stack decisions
