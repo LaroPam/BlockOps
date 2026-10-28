@@ -17,7 +17,9 @@ use windows_sys::Win32::{
         IsValidSid, TokenUser, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
         OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
     },
-    Storage::FileSystem::{FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT},
+    Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
@@ -44,6 +46,7 @@ pub fn read_private(path: &Path) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .share_mode(FILE_SHARE_READ)
         .open(path)?;
     let metadata = file.metadata()?;
     ensure!(
