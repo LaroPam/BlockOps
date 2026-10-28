@@ -29,7 +29,7 @@ public final class LocalJoinBridgeTest {
     public static void main(String[] args) throws Exception {
         var received = new AtomicInteger();
         var clock = new AtomicLong();
-        try (var bridge = new LocalJoinBridge(received::set, Duration.ofMinutes(1), clock::get)) {
+        try (var bridge = new LocalJoinBridge(port -> { received.set(port); return true; }, Duration.ofMinutes(1), clock::get)) {
             check(bridge.token().matches("[0-9a-f]{64}"), "capability is not 256-bit hex");
             check(request(bridge, "/v1/join", "0".repeat(64), "25565", null) == 403, "wrong token accepted");
             check(request(bridge, "/v1/join", bridge.token(), "0", null) == 400, "zero port accepted");
@@ -43,12 +43,16 @@ public final class LocalJoinBridgeTest {
             check(request(bridge, "/v1/join", bridge.token(), "12345", null) == 403, "replay accepted");
             check(received.get() == 25565, "replay reached callback");
         }
-        try (var bridge = new LocalJoinBridge(received::set, Duration.ofSeconds(1), clock::get)) {
-            clock.addAndGet(Duration.ofSeconds(1).toNanos());
+        try (var bridge = new LocalJoinBridge(port -> { received.set(port); return true; }, Duration.ofSeconds(100), clock::get)) {
+            clock.addAndGet(Duration.ofSeconds(100).toNanos());
             check(request(bridge, "/v1/join", bridge.token(), "25565", null) == 403, "expired capability accepted");
         }
+        try (var bridge = new LocalJoinBridge(port -> false, Duration.ofSeconds(30))) {
+            check(request(bridge, "/v1/join", bridge.token(), "25565", null) == 409, "unavailable game accepted request");
+            check(request(bridge, "/v1/join", bridge.token(), "25565", null) == 403, "failed one-use request was replayed");
+        }
         var calls = new AtomicInteger();
-        try (var bridge = new LocalJoinBridge(port -> calls.incrementAndGet(), Duration.ofSeconds(30))) {
+        try (var bridge = new LocalJoinBridge(port -> { calls.incrementAndGet(); return true; }, Duration.ofSeconds(30))) {
             var one = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
                 try { return request(bridge, "/v1/join", bridge.token(), "12345", null); }
                 catch (Exception error) { throw new RuntimeException(error); }
@@ -65,7 +69,7 @@ public final class LocalJoinBridgeTest {
         String rustClient = System.getenv("BLOCKOPS_BRIDGE_TEST_CLIENT");
         if (rustClient != null && !rustClient.isBlank()) {
             received.set(0);
-            try (var bridge = new LocalJoinBridge(received::set, Duration.ofSeconds(30))) {
+            try (var bridge = new LocalJoinBridge(port -> { received.set(port); return true; }, Duration.ofSeconds(30))) {
                 // The test-only capability travels through stdin, never a process argument or log.
                 Process process = new ProcessBuilder(rustClient, Integer.toString(bridge.port()), "34567")
                     .redirectErrorStream(true).start();

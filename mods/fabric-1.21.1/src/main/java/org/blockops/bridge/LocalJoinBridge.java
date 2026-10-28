@@ -12,27 +12,31 @@ import java.time.Duration;
 import java.util.HexFormat;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.IntConsumer;
+import java.util.function.IntPredicate;
 import java.util.function.LongSupplier;
 
 /** An explicitly started, short-lived one-use local HTTP capability. */
 public final class LocalJoinBridge implements AutoCloseable {
     private final HttpServer server;
     private final ThreadPoolExecutor worker;
+    private final ScheduledExecutorService expiry;
+    private final AtomicBoolean closed = new AtomicBoolean();
     private final byte[] token;
     private final long startedNanos;
     private final long lifetimeNanos;
     private final LongSupplier ticker;
     private final AtomicBoolean used = new AtomicBoolean();
-    private final IntConsumer onJoin;
+    private final IntPredicate onJoin;
 
-    public LocalJoinBridge(IntConsumer onJoin, Duration lifetime) throws IOException {
+    public LocalJoinBridge(IntPredicate onJoin, Duration lifetime) throws IOException {
         this(onJoin, lifetime, System::nanoTime);
     }
 
-    LocalJoinBridge(IntConsumer onJoin, Duration lifetime, LongSupplier ticker) throws IOException {
+    LocalJoinBridge(IntPredicate onJoin, Duration lifetime, LongSupplier ticker) throws IOException {
         if (onJoin == null || ticker == null || lifetime == null || lifetime.isNegative() || lifetime.isZero()
                 || lifetime.compareTo(Duration.ofMinutes(5)) > 0) {
             throw new IllegalArgumentException("Invalid bridge lifetime or callback");
@@ -51,9 +55,15 @@ public final class LocalJoinBridge implements AutoCloseable {
                 thread.setDaemon(true);
                 return thread;
             }, new ThreadPoolExecutor.AbortPolicy());
+        this.expiry = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "blockops-bridge-expiry");
+            thread.setDaemon(true);
+            return thread;
+        });
         server.setExecutor(worker);
         server.createContext("/v1/join", this::handle);
         server.start();
+        expiry.schedule(this::close, lifetime.toNanos(), TimeUnit.NANOSECONDS);
     }
 
     public int port() { return server.getAddress().getPort(); }
@@ -87,10 +97,8 @@ public final class LocalJoinBridge implements AutoCloseable {
             int port = Integer.parseInt(value);
             if (port == 0 || port > 65535) { respond(exchange, 400); return; }
             if (!used.compareAndSet(false, true)) { respond(exchange, 403); return; }
-            // This accepts a request only; a later Minecraft integration must run on the
-            // client thread and report separately whether a connection actually succeeds.
-            onJoin.accept(port);
-            respond(exchange, 202);
+            // Acceptance only means the caller started the attempt, not that Minecraft joined.
+            respond(exchange, onJoin.test(port) ? 202 : 409);
         } finally {
             exchange.close();
         }
@@ -102,7 +110,9 @@ public final class LocalJoinBridge implements AutoCloseable {
     }
 
     @Override public void close() {
+        if (!closed.compareAndSet(false, true)) return;
         server.stop(0);
         worker.shutdownNow();
+        expiry.shutdownNow();
     }
 }

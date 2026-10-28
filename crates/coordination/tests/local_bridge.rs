@@ -59,3 +59,21 @@ async fn local_client_sends_only_the_selected_loopback_port_and_capability() {
     assert_eq!(received.1, "32123");
     task.abort();
 }
+
+#[tokio::test]
+async fn malformed_pairing_codes_never_appear_in_errors() {
+    let endpoint = (Ipv4Addr::LOCALHOST, 25565).into();
+    for code in [
+        "1234:secret-not-hex",
+        "0:",
+        "65536:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "1:00",
+        "localhost:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ] {
+        let error = blockops_coordination::local_bridge::request_paired_join(code, endpoint)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains(code));
+    }
+}

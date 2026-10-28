@@ -155,6 +155,26 @@ async fn join_code(
     Ok(result)
 }
 #[tauri::command]
+async fn join_in_minecraft(state: State<'_, AppState>, pairing_code: String) -> Result<(), String> {
+    if pairing_code.len() > 80 {
+        return Err("Некорректный код сопряжения".into());
+    }
+    // Keep the session alive until the local request completes; never accept a destination from the UI.
+    let guard = state.0.lock().await;
+    let (mode, session, _) = guard
+        .as_ref()
+        .ok_or("Сначала подключитесь к миру по приглашению")?;
+    if mode != "join" {
+        return Err("Для входа нужен активный гостевой туннель".into());
+    }
+    let endpoint = session
+        .endpoint
+        .ok_or("Локальный адрес гостевого туннеля недоступен")?;
+    blockops_coordination::local_bridge::request_paired_join(&pairing_code, endpoint).await
+        .map_err(|_| "Не удалось начать подключение в Minecraft. Откройте главное меню игры и получите новый код мода.".to_owned())
+}
+
+#[tauri::command]
 async fn discover_minecraft_profiles(
     folder: Option<String>,
 ) -> Result<Vec<blockops_server_manager::minecraft_profiles::DiscoveredProfile>, String> {
@@ -256,6 +276,7 @@ fn main() {
             codes,
             revoke_code,
             join_code,
+            join_in_minecraft,
             open_eula,
             discover_minecraft_profiles,
             get_minecraft_selection,
