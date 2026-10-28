@@ -93,7 +93,15 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Build local bridge test client
+        working-directory: .
+        run: cargo build -p blockops-coordination --example local_bridge_smoke --locked
       - name: Build client mod
+        env:
+          BLOCKOPS_BRIDGE_TEST_CLIENT: ${{ github.workspace }}/target/debug/examples/local_bridge_smoke
         run: |
           if ! ./gradlew --no-daemon build > /tmp/blockops-fabric-build.log 2>&1; then
             tail -80 /tmp/blockops-fabric-build.log
@@ -107,6 +115,8 @@ jobs:
           jar tf build/libs/blockops-fabric-client-0.1.0.jar > /tmp/blockops-mod-files.txt
           grep -Fx 'fabric.mod.json' /tmp/blockops-mod-files.txt
           grep -Fx 'org/blockops/fabric/BlockOpsClient.class' /tmp/blockops-mod-files.txt
+          grep -Fx 'org/blockops/fabric/PairingScreen.class' /tmp/blockops-mod-files.txt
+          grep -Fx 'blockops.client.mixins.json' /tmp/blockops-mod-files.txt
       - uses: actions/upload-artifact@v4
         with:
           name: blockops-fabric-1.21.1-experimental
