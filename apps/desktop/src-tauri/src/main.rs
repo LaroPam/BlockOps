@@ -155,7 +155,10 @@ async fn stop(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-async fn create_code(state: State<'_, AppState>, coordinator: String) -> Result<(), String> {
+async fn create_code(
+    state: State<'_, AppState>,
+    coordinator: String,
+) -> Result<blockops_coordination::client::CodeStatus, String> {
     let guard = state.0.lock().await;
     let (_, session, _) = guard.as_ref().ok_or("Сначала создайте туннель хоста")?;
     let mut codes = state.1.lock().await;
@@ -168,8 +171,9 @@ async fn create_code(state: State<'_, AppState>, coordinator: String) -> Result<
         .publish(session, 600)
         .await
         .map_err(|e| e.to_string())?;
+    let status = code.status.borrow().clone();
     codes.push(code);
-    Ok(())
+    Ok(status)
 }
 #[tauri::command]
 async fn codes(

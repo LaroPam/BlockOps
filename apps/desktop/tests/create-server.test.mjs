@@ -156,7 +156,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
         if (command === 'create_code') {
           window.__calls.push([command, args]);
           codes = [{ id: 'a', code: 'ABCD-EFGH-JKMN', expires_at: 2000000000, phase: 'waiting', peer: null, error: null }];
-          return null;
+          return codes[0];
         }
         if (command === 'codes') return codes;
         if (command === 'status') return session;
@@ -171,7 +171,9 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await auto.getByText(/Порт получен из Minecraft/).waitFor();
     assert.equal(await auto.getByLabel('Порт мира Minecraft').inputValue(), '45678');
     await auto.getByRole('button', { name: 'Пригласить друга' }).click();
-    await auto.getByRole('button', { name: 'Копировать код' }).click();
+    // The first invitation is copied as a ready message; the button copies it again.
+    await auto.getByText('Приглашение скопировано: вставьте его в чат с другом.').waitFor();
+    await auto.getByRole('button', { name: 'Копировать приглашение' }).click();
     await auto.getByRole('button', { name: 'Скопировано' }).waitFor();
     const autoCalls = await auto.evaluate(() => window.__calls);
     assert.deepEqual(autoCalls.map(([command]) => command), ['detect_open_world', 'host', 'create_code']);
@@ -179,8 +181,38 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     assert.equal(autoCalls[1][1].target, '127.0.0.1:45678');
     assert.equal(autoCalls[1][1].worldWatchId, 3);
     assert.deepEqual(autoCalls[2][1], { coordinator: 'http://127.0.0.1:8080' });
-    assert.deepEqual(await auto.evaluate(() => window.__copied), ['ABCD-EFGH-JKMN']);
+    const copied = await auto.evaluate(() => window.__copied);
+    assert.equal(copied.length, 2);
+    assert.equal(copied[0], copied[1]);
+    assert.match(copied[0], /^Заходи в мой мир Minecraft через BlockOps! Код приглашения: ABCD-EFGH-JKMN\. Он одноразовый и действует до /);
     await auto.close();
+
+    // A whole pasted invitation connects at once; text without exactly one code pastes as usual.
+    const invited = await browser.newPage();
+    await invited.addInitScript(() => {
+      window.__joins = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'join_code') { window.__joins.push(args); throw '404 Not Found'; }
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await invited.goto(baseUrl);
+    await invited.getByRole('button', { name: /Присоединиться/ }).click();
+    const field = invited.getByLabel('Приглашение или код');
+    const paste = text => field.evaluate((input, value) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', value);
+      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }, text);
+    await paste('Два кода: ABCD-EFGH-JKMN и ZZZZ-ZZZZ-ZZZZ');
+    await paste('Без кода');
+    assert.deepEqual(await invited.evaluate(() => window.__joins), []);
+    await paste('Заходи в мой мир Minecraft через BlockOps! Код приглашения: abcd-efgh-jkmn. Он одноразовый и действует до 15:30.');
+    await invited.getByText(/Код не найден, уже использован/).waitFor();
+    assert.equal(await field.inputValue(), 'ABCD-EFGH-JKMN');
+    assert.deepEqual(await invited.evaluate(() => window.__joins), [{ code: 'ABCD-EFGH-JKMN', coordinator: 'http://127.0.0.1:8080' }]);
+    await invited.close();
 
     // Automatic guest flow: the game joins by itself once it reaches the main menu, once.
     const guest = await browser.newPage();
