@@ -353,9 +353,11 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
+ "blockops-local-discovery",
  "blockops-tunnel",
  "clap",
  "hex",
+ "hmac",
  "libp2p",
  "rand 0.8.8",
  "reqwest",

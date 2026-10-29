@@ -33,9 +33,18 @@ java {
     targetCompatibility = JavaVersion.VERSION_21
 }
 
-tasks.register('localBridgeTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.blockops.bridge.LocalJoinBridgeTest'
+// Plain executable checks: no test framework, Minecraft runtime or internet access.
+def bridgeChecks = [
+    localBridgeTest: 'org.blockops.bridge.LocalJoinBridgeTest',
+    discoveryPublisherTest: 'org.blockops.bridge.DiscoveryPublisherTest',
+    windowsDescriptorTest: 'org.blockops.bridge.WindowsDescriptorFileTest',
+]
+bridgeChecks.each { name, main ->
+    tasks.register(name, JavaExec) {
+        dependsOn testClasses
+        // The Windows writer uses JNA from Minecraft's libraries, absent from the test runtime.
+        classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+        mainClass = main
+    }
+    tasks.named('check') { dependsOn tasks.named(name) }
 }
-tasks.named('check') { dependsOn tasks.named('localBridgeTest') }

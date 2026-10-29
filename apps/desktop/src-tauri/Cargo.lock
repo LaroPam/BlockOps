@@ -566,6 +566,7 @@ dependencies = [
  "blockops-tunnel",
  "clap",
  "hex",
+ "hmac",
  "libp2p",
  "rand 0.8.8",
  "reqwest 0.12.28",
@@ -583,6 +584,7 @@ name = "blockops-desktop"
 version = "0.1.0"
 dependencies = [
  "blockops-coordination",
+ "blockops-local-discovery",
  "blockops-server-manager",
  "blockops-tunnel",
  "serde",
@@ -591,6 +593,17 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tokio",
+]
+
+[[package]]
+name = "blockops-local-discovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

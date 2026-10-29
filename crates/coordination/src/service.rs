@@ -43,10 +43,16 @@ fn secret() -> String {
 fn hash(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
 }
+/// Crockford decoding: case, dashes and spaces do not matter, and the letters the alphabet
+/// omits are read as the digits people confuse them with.
 fn normalize(code: &str) -> String {
     code.chars()
         .filter(|c| *c != '-' && !c.is_ascii_whitespace())
-        .map(|c| c.to_ascii_uppercase())
+        .map(|c| match c.to_ascii_uppercase() {
+            'O' => '0',
+            'I' | 'L' => '1',
+            c => c,
+        })
         .collect()
 }
 fn code() -> String {
@@ -275,6 +281,15 @@ pub async fn serve(listener: tokio::net::TcpListener, store: Store) -> std::io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codes_tolerate_case_spacing_and_confusable_letters() {
+        assert_eq!(normalize("ABCD-EF01-2345"), "ABCDEF012345");
+        assert_eq!(normalize(" abcd ef0l 2345 "), "ABCDEF012345");
+        assert_eq!(normalize("abcd-efOI-2345"), "ABCDEF012345");
+        // Letters outside the alphabet that are not confusable are left to fail the lookup.
+        assert_eq!(normalize("uuuu"), "UUUU");
+    }
 
     fn record() -> Record {
         Record {

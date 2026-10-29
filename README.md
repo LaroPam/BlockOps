@@ -48,6 +48,10 @@ check additionally starts **two CLI client processes** and a relay process.
 - Standalone circuit relay v2, persistent optional identity, configurable traffic limits.
 - UI to start/stop sessions, exchange a secret invitation, obtain a local Minecraft address,
   and inspect actual connection counts, observed guest transport and last errors.
+- Experimental Fabric 1.21.1 companion: on Windows the desktop notices an opened LAN world by itself,
+  one click prepares the connection and a copyable code, and the guest's Minecraft joins once it
+  reaches the main menu. It works through an owner-only descriptor and an HMAC-authenticated one-use
+  local bridge; a manually copied code remains as a fallback.
 
 ## Not included yet
 

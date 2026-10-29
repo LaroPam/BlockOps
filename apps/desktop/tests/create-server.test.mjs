@@ -61,9 +61,15 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       window.__calls = [];
       window.__worldAlive = true;
       let session = null;
+      window.__detections = [];
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-        if (command === 'detect_open_world') { window.__detection = args; return { id: 7, port: 54321 }; }
+        if (command === 'detect_open_world') {
+          window.__detections.push(args);
+          if (args.pairingCode === null && window.__detections.length === 1) throw 'Minecraft с модом BlockOps не найден на этом компьютере.';
+          return { id: 7, port: 54321 };
+        }
         if (command === 'world_watch_alive') return window.__worldAlive;
+        if (command === 'create_code') { window.__codeRequests = (window.__codeRequests || 0) + 1; return null; }
         if (command === 'host') {
           window.__calls.push(args);
           session = { mode: 'host', endpoint: null, active_connections: 0, last_error: null, transport: null };
@@ -77,21 +83,31 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await lan.goto(baseUrl);
     const portInput = lan.getByLabel('Порт мира Minecraft');
     assert.equal(await portInput.inputValue(), '');
-    await lan.getByText('Определить порт через мод BlockOps', { exact: true }).click();
+    // Automatic discovery first: a failure explains itself and leaves the manual path open.
+    const find = lan.getByRole('button', { name: 'Найти открытый мир', exact: true });
+    await find.click();
+    await lan.getByText(/Minecraft с модом BlockOps не найден/).waitFor();
+    assert.equal(await portInput.inputValue(), '');
+    await lan.locator('.world-detection').getByText('Ввести код мода вручную', { exact: true }).click();
     await lan.getByLabel('Код мода на этом компьютере').fill('12345:' + 'a'.repeat(64));
     await lan.getByRole('button', { name: 'Определить порт', exact: true }).click();
     await lan.getByText(/Порт получен из Minecraft/).waitFor();
     assert.equal(await portInput.inputValue(), '54321');
     assert.equal(await lan.getByLabel('Код мода на этом компьютере').inputValue(), '');
-    const detectionArgs = await lan.evaluate(() => window.__detection);
-    assert.deepEqual(detectionArgs, { pairingCode: '12345:' + 'a'.repeat(64) });
-    await lan.getByRole('button', { name: 'Подготовить приглашение' }).click();
+    await find.click();
+    await lan.waitForFunction(() => window.__detections.length === 3);
+    await lan.getByText(/Порт получен из Minecraft/).waitFor();
+    const detectionArgs = await lan.evaluate(() => window.__detections);
+    assert.deepEqual(detectionArgs, [{ pairingCode: null }, { pairingCode: '12345:' + 'a'.repeat(64) }, { pairingCode: null }]);
+    await lan.getByRole('button', { name: 'Пригласить друга' }).click();
     await lan.waitForFunction(() => window.__calls.length === 1);
     const [hostArgs] = await lan.evaluate(() => window.__calls);
     assert.equal(hostArgs.target, '127.0.0.1:54321');
     assert.equal(hostArgs.relay, null);
     assert.equal(hostArgs.worldWatchId, 7);
     await lan.getByRole('button', { name: 'Создать одноразовый код' }).waitFor();
+    // One click prepares the connection and the first friend's code.
+    await lan.waitForFunction(() => window.__codeRequests === 1);
     await lan.evaluate(() => { window.__worldAlive = false; });
     await lan.getByText(/Мир закрыт или связь с модом потеряна/).waitFor();
     assert.equal(await portInput.inputValue(), '');
@@ -108,14 +124,121 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       }};
     });
     await joinPage.goto(baseUrl);
-    const pairing = joinPage.getByLabel('Код сопряжения с Minecraft');
-    await pairing.fill('12345:' + 'a'.repeat(64));
     await joinPage.getByRole('button', { name: 'Войти в мир', exact: true }).click();
     await joinPage.getByText(/Minecraft начал попытку подключения/).waitFor();
-    const [joinArgs] = await joinPage.evaluate(() => window.__calls);
-    assert.deepEqual(joinArgs, { pairingCode: '12345:' + 'a'.repeat(64) });
+    await joinPage.locator('.minecraft-join').getByText('Ввести код мода вручную', { exact: true }).click();
+    const pairing = joinPage.getByLabel('Код сопряжения с Minecraft');
+    await pairing.fill('12345:' + 'a'.repeat(64));
+    await joinPage.getByRole('button', { name: 'Войти по коду', exact: true }).click();
+    await joinPage.waitForFunction(() => window.__calls.length === 2);
+    const joinArgs = await joinPage.evaluate(() => window.__calls);
+    assert.deepEqual(joinArgs, [{ pairingCode: null }, { pairingCode: '12345:' + 'a'.repeat(64) }]);
     assert.equal(await pairing.inputValue(), '');
     await joinPage.close();
+    // Automatic host flow: the world is noticed once opened, one click yields a copyable code.
+    const auto = await browser.newPage();
+    await auto.addInitScript(() => {
+      window.__local = { running: 1, open_worlds: 0, in_menu: 0 };
+      window.__calls = [];
+      window.__copied = [];
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async text => { window.__copied.push(text); } } });
+      let session = null;
+      let codes = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'local_minecraft') return window.__local;
+        if (command === 'detect_open_world') { window.__calls.push([command, args]); return { id: 3, port: 45678 }; }
+        if (command === 'world_watch_alive') return true;
+        if (command === 'host') {
+          window.__calls.push([command, args]);
+          session = { mode: 'host', endpoint: null, active_connections: 0, last_error: null, transport: null };
+          return session;
+        }
+        if (command === 'create_code') {
+          window.__calls.push([command, args]);
+          codes = [{ id: 'a', code: 'ABCD-EFGH-JKMN', expires_at: 2000000000, phase: 'waiting', peer: null, error: null }];
+          return null;
+        }
+        if (command === 'codes') return codes;
+        if (command === 'status') return session;
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await auto.goto(baseUrl);
+    await auto.getByText(/Minecraft запущен. Откройте мир для сети/).waitFor();
+    assert.equal(await auto.evaluate(() => window.__calls.length), 0, 'detection started before the world opened');
+    await auto.evaluate(() => { window.__local = { running: 1, open_worlds: 1, in_menu: 0 }; });
+    await auto.getByText(/Порт получен из Minecraft/).waitFor();
+    assert.equal(await auto.getByLabel('Порт мира Minecraft').inputValue(), '45678');
+    await auto.getByRole('button', { name: 'Пригласить друга' }).click();
+    await auto.getByRole('button', { name: 'Копировать код' }).click();
+    await auto.getByRole('button', { name: 'Скопировано' }).waitFor();
+    const autoCalls = await auto.evaluate(() => window.__calls);
+    assert.deepEqual(autoCalls.map(([command]) => command), ['detect_open_world', 'host', 'create_code']);
+    assert.deepEqual(autoCalls[0][1], { pairingCode: null });
+    assert.equal(autoCalls[1][1].target, '127.0.0.1:45678');
+    assert.equal(autoCalls[1][1].worldWatchId, 3);
+    assert.deepEqual(autoCalls[2][1], { coordinator: 'http://127.0.0.1:8080' });
+    assert.deepEqual(await auto.evaluate(() => window.__copied), ['ABCD-EFGH-JKMN']);
+    await auto.close();
+
+    // Automatic guest flow: the game joins by itself once it reaches the main menu, once.
+    const guest = await browser.newPage();
+    await guest.addInitScript(() => {
+      window.__local = { running: 1, open_worlds: 0, in_menu: 0 };
+      window.__joins = [];
+      const session = { mode: 'join', endpoint: '127.0.0.1:34567', active_connections: 0, last_error: null, transport: null };
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'local_minecraft') return window.__local;
+        if (command === 'status') return session;
+        if (command === 'join_in_minecraft') { window.__joins.push(args); return null; }
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await guest.goto(baseUrl);
+    await guest.getByText(/Откройте главное меню Minecraft: игра сама подключится/).waitFor();
+    assert.equal(await guest.evaluate(() => window.__joins.length), 0, 'joined before Minecraft was ready');
+    await guest.evaluate(() => { window.__local = { running: 1, open_worlds: 0, in_menu: 1 }; });
+    await guest.getByText(/Minecraft начал попытку подключения/).waitFor();
+    await delay(3500); // Several more polls must not repeat the request.
+    assert.deepEqual(await guest.evaluate(() => window.__joins), [{ pairingCode: null }]);
+    await guest.close();
+
+    // Service addresses survive a restart, can be reset, and failures read as advice.
+    const settings = await browser.newPage();
+    await settings.addInitScript(() => {
+      let session = null;
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'host') {
+          session = { mode: 'host', endpoint: null, active_connections: 0, last_error: null, transport: null };
+          return session;
+        }
+        if (command === 'create_code') throw `error sending request for url (${args.coordinator}/v1/invites)`;
+        if (command === 'status') return session;
+        if (command === 'servers' || command === 'codes') return [];
+        return null;
+      }};
+    });
+    await settings.goto(baseUrl);
+    await settings.getByText('Дополнительные настройки подключения', { exact: true }).click();
+    await settings.getByLabel('Адрес сервиса координации').fill('https://connect.example.org');
+    await settings.getByLabel('Адрес relay для вашего сервера').fill('/ip4/192.0.2.1/tcp/4001/p2p/peer');
+    await settings.reload();
+    await settings.getByText('Дополнительные настройки подключения', { exact: true }).click();
+    assert.equal(await settings.getByLabel('Адрес сервиса координации').inputValue(), 'https://connect.example.org');
+    assert.equal(await settings.getByLabel('Адрес relay для вашего сервера').inputValue(), '/ip4/192.0.2.1/tcp/4001/p2p/peer');
+    await settings.getByLabel('Порт мира Minecraft').fill('25565');
+    await settings.getByRole('button', { name: 'Пригласить друга' }).click();
+    await settings.getByText(/код для друга не создан: Не удалось связаться с сервисом координации/).waitFor();
+    await settings.getByRole('button', { name: 'Отключить соединение' }).waitFor();
+    await settings.evaluate(() => window.__TAURI_INTERNALS__.invoke = async command => command === 'servers' || command === 'codes' ? [] : null);
+    await settings.getByRole('button', { name: 'Отключить соединение' }).click();
+    await settings.getByRole('button', { name: 'Вернуть локальные настройки' }).click();
+    assert.equal(await settings.getByLabel('Адрес сервиса координации').inputValue(), 'http://127.0.0.1:8080');
+    assert.equal(await settings.getByLabel('Адрес relay для вашего сервера').inputValue(), '');
+    await settings.close();
+
     const profiles = await browser.newPage();
     await profiles.addInitScript(() => {
       window.__calls = [];

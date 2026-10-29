@@ -57,9 +57,15 @@ async fn code_is_single_use_and_identity_bound_and_revocable() {
         .unwrap();
     let code = client.publish(&host, 30).await.unwrap();
     let secret = code.status.borrow().code.clone();
+    // As typed by a friend: lower case, spaces, and confusable letters for 0 and 1.
+    let typed = secret
+        .replace('-', " ")
+        .replace('0', "o")
+        .replace('1', "l")
+        .to_lowercase();
     let key = libp2p::identity::Keypair::generate_ed25519();
     let invite = client
-        .redeem(&secret, key.public().to_peer_id())
+        .redeem(&typed, key.public().to_peer_id())
         .await
         .unwrap();
     assert!(client

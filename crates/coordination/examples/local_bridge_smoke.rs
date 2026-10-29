@@ -1,13 +1,41 @@
-//! Test-only client: capability is supplied on stdin, never via arguments or output.
+//! Test-only client: capability is supplied on stdin or found through private discovery,
+//! never via arguments or output.
 use anyhow::{ensure, Result};
 use std::{
     io::{self, BufRead, Read},
     net::{Ipv4Addr, SocketAddr},
 };
 
+/// Find the only live companion through private discovery and require a proven world port.
+async fn discover(mut args: impl Iterator<Item = String>) -> Result<()> {
+    let directory = std::path::PathBuf::from(
+        args.next()
+            .ok_or_else(|| anyhow::anyhow!("Missing directory"))?,
+    );
+    let expected: u16 = args
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Missing world port"))?
+        .parse()?;
+    ensure!(args.next().is_none(), "Unexpected argument");
+    let found = blockops_local_discovery::discover(&directory);
+    ensure!(
+        found.len() == 1,
+        "Expected one companion, found {}",
+        found.len()
+    );
+    let watch =
+        blockops_coordination::local_bridge::watch_world_at(found[0].port, &found[0].token).await?;
+    ensure!(watch.port == expected, "Unexpected discovered world port");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().map(String::as_str) == Some("discover") {
+        args.next();
+        return discover(args).await;
+    }
     let bridge_port: u16 = args
         .next()
         .ok_or_else(|| anyhow::anyhow!("Missing bridge port"))?

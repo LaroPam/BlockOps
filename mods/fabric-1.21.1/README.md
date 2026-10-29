@@ -4,8 +4,10 @@ This is a client-only Fabric mod for Minecraft Java **1.21.1**, Java 21 and Fabr
 0.16.10 or newer. It requires Fabric API. No Minecraft binaries are included in this
 repository or distributed inside the mod.
 
-The mod registers the local client command `/blockops` and a pairing button in the title
-screen. Either opens a short-lived local bridge and lets the user copy a one-use secret.
+On Windows the mod advertises a one-use local bridge through a private descriptor, so the
+BlockOps desktop on the same computer finds it without a copied code (see below). The mod also
+registers the local client command `/blockops` and a pairing button in the title screen. Either
+opens a short-lived local bridge and lets the user copy a one-use secret as a fallback.
 When the host has opened a single-player world to LAN, `/blockops` allows the desktop to
 request its current port from Minecraft without parsing LAN broadcasts. The desktop can
 keep a one-use authenticated watch open to stop its associated tunnel after world closure.
@@ -21,10 +23,29 @@ Minecraft, mappings and Fabric dependencies from their official repositories. It
 `build/libs/blockops-fabric-client-0.1.0.jar`. GitHub Actions builds and archives this JAR.
 Building it does not establish that it works in a real Minecraft client.
 
+## Automatic discovery (Windows)
+
+While the game runs, the mod keeps one unused bridge advertised in
+`%LOCALAPPDATA%\BlockOps\discovery\minecraft-<pid>.json`. The file is created with an
+explicit owner and a protected DACL that allows only the current Windows user, before any
+secret is written, then renamed into place. It holds the bridge port, a 256-bit one-use
+secret valid for under five minutes and the game state (`lan`, `menu` or `busy`), observed
+on the client thread. The state is only a hint for when the desktop should ask: the bridge
+checks the real state on every request, and a state change rewrites the descriptor without
+spending the bridge. A used or nearly expired bridge is replaced within a
+second; the file is removed when the game stops, and files older than ten minutes are removed
+at the next start. The writer calls WinAPI through the JNA library that Minecraft already
+ships, so nothing extra is bundled.
+
+The desktop reads only owner-only files, skips expired ones and those of exited processes, and
+then authenticates as described below. Other Windows users cannot read the secret; software
+running as the same user or as an administrator is inside the trust boundary. Automatic
+discovery is not available on other operating systems, where the manual code remains.
+
 ## Experimental world port
 
-In an open single-player world, enter `/blockops`, copy the local code, then use
-**Определить порт через мод** in BlockOps. This returns a snapshot only if the integrated
+In an open single-player world, use **Найти открытый мир** in BlockOps. As a fallback, enter
+`/blockops`, copy the local code and paste it under **Ввести код мода вручную**. This returns a snapshot only if the integrated
 server reports the world open to LAN. It still requires a manual one-use pairing code and
 monitors the world while its authenticated stream remains open. A closed world, changed port
 or lost stream causes the associated tunnel to stop.
@@ -36,21 +57,31 @@ local process could reuse the port before the monitor notices.
 
 1. Install the prototype manually only in an isolated, compatible Fabric 1.21.1 test instance.
    Start Minecraft, leave any active world, and open **BlockOps** on the title screen.
-2. Choose **Скопировать код** and paste the secret into BlockOps on the same computer, after
-   a guest tunnel is established. Clipboard history or synchronization may retain the code.
+2. After a guest tunnel is established, **Войти в мир** in BlockOps finds the mod automatically
+   on Windows. As a fallback, choose **Скопировать код** in the mod and paste the secret under
+   **Ввести код мода вручную**. Clipboard history or synchronization may retain the code.
    Never share it. A new code is needed after use or five minutes.
-3. **Войти в мир** asks the mod to connect to the current loopback guest tunnel. The mod
+3. The desktop asks the mod to connect to the current loopback guest tunnel. The mod
    refuses while a world is open or Minecraft is outside its title, pairing or multiplayer screens. A
    confirmation means only that Minecraft started an attempt; the game reports its outcome.
 
-The mod binds only `127.0.0.1`, requires a 256-bit one-use bearer secret, rejects browser
-Origin headers and closes the listener after five minutes. The desktop derives the target
-from the current guest tunnel rather than accepting a destination from the UI. The code is
-not written to files, process arguments, game chat or application logs by this integration.
-Same-user local processes remain within the trust boundary, and the clipboard is explicitly
-user-controlled. Minecraft's Java runtime must provide the `jdk.httpserver` module.
+The mod binds only `127.0.0.1`, rejects browser Origin headers and closes the listener after
+five minutes. The secret never crosses the socket: each request carries a fresh 256-bit nonce
+and `Authorization: BlockOps-HMAC <hex>`, an HMAC-SHA256 keyed by the secret over the protocol
+version, path, nonce and requested port; a request is accepted once. A successful response
+carries `X-BlockOps-Proof`, an HMAC over the path, nonce and returned port, which the desktop
+verifies before acting on it. A process that later reuses the port therefore neither learns
+the secret nor passes as the mod. The desktop derives the target from the current guest tunnel
+rather than accepting a destination from the UI. The manual code is not written to files,
+process arguments, game chat or application logs; the automatic descriptor is written only to
+the owner-only file above. The clipboard is explicitly user-controlled. Minecraft's Java
+runtime must provide the `jdk.httpserver` module.
 
-`./gradlew build` runs the Java bridge checks, including a Rust-to-Java test that passes a
-short-lived secret through a private test-process stdin pipe. Real Minecraft, mixin runtime,
-launcher compatibility and gameplay have not yet been tested. Automatic pairing,
-mod installation, Forge, NeoForge and other Minecraft versions remain future work.
+`./gradlew build` runs the Java bridge and publisher checks, including Rust-to-Java tests that
+pass a short-lived secret through a private test-process stdin pipe. On Windows it also writes
+real descriptors and requires the Rust reader to accept them, to reject a file with inherited
+permissions and to discover the bridge end to end; set `BLOCKOPS_BRIDGE_TEST_CLIENT` and
+`BLOCKOPS_DISCOVERY_TEST_READER` to the built `local_bridge_smoke` and `read_descriptor`
+examples. Real Minecraft, mixin runtime, launcher compatibility (including file-system
+virtualization by packaged launchers) and gameplay have not yet been tested. Mod installation,
+Forge, NeoForge and other Minecraft versions remain future work.

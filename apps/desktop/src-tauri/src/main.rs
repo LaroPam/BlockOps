@@ -216,9 +216,90 @@ async fn join_code(
     *guard = Some(("join".into(), session, None));
     Ok(result)
 }
+const NO_COMPANION: &str = "Minecraft с модом BlockOps не найден на этом компьютере. Запустите игру с модом или введите код мода вручную.";
+
+/// Running Minecraft instances that advertise the mod through private discovery.
+async fn companions() -> Vec<blockops_local_discovery::Descriptor> {
+    let Some(directory) = blockops_local_discovery::default_directory() else {
+        return Vec::new();
+    };
+    tokio::task::spawn_blocking(move || blockops_local_discovery::discover(&directory))
+        .await
+        .unwrap_or_default()
+}
+
+/// Companions whose state hint matches, or all of them when none does: the hint can lag
+/// the game by a second, and the bridge checks the real state on each request anyway.
+fn prefer(
+    found: &[blockops_local_discovery::Descriptor],
+    state: blockops_local_discovery::GameState,
+) -> Vec<&blockops_local_discovery::Descriptor> {
+    let matching: Vec<_> = found
+        .iter()
+        .filter(|companion| companion.state == state)
+        .collect();
+    if matching.is_empty() {
+        found.iter().collect()
+    } else {
+        matching
+    }
+}
+
+#[derive(Serialize)]
+struct LocalMinecraft {
+    running: usize,
+    open_worlds: usize,
+    in_menu: usize,
+}
+
+/// What Minecraft with the mod reports doing on this computer. Reads only the private
+/// descriptors and spends no bridge, so the interface can poll it.
 #[tauri::command]
-async fn join_in_minecraft(state: State<'_, AppState>, pairing_code: String) -> Result<(), String> {
-    if pairing_code.len() > 80 {
+async fn local_minecraft() -> Result<LocalMinecraft, String> {
+    use blockops_local_discovery::GameState;
+    let found = companions().await;
+    let count = |state| found.iter().filter(|c| c.state == state).count();
+    Ok(LocalMinecraft {
+        running: found.len(),
+        open_worlds: count(GameState::Lan),
+        in_menu: count(GameState::Menu),
+    })
+}
+
+/// Ask each discovered companion for an open world; exactly one must have it.
+async fn find_open_world() -> Result<blockops_coordination::local_bridge::WorldWatch, String> {
+    let found = companions().await;
+    if found.is_empty() {
+        return Err(NO_COMPANION.into());
+    }
+    let mut worlds = Vec::new();
+    for companion in prefer(&found, blockops_local_discovery::GameState::Lan) {
+        // Each probe uses up that bridge; the mod advertises a fresh one within a second.
+        if let Ok(watch) =
+            blockops_coordination::local_bridge::watch_world_at(companion.port, &companion.token)
+                .await
+        {
+            worlds.push(watch);
+        }
+    }
+    let world = worlds.pop().ok_or(
+        "Minecraft с модом BlockOps запущен, но открытый для сети мир не найден. Откройте мир для сети и попробуйте снова.",
+    )?;
+    if !worlds.is_empty() {
+        return Err(
+            "Открыты миры в нескольких копиях Minecraft. Оставьте один и попробуйте снова.".into(),
+        );
+    }
+    Ok(world)
+}
+
+/// Without a pairing code, the only discovered Minecraft is asked to join.
+#[tauri::command]
+async fn join_in_minecraft(
+    state: State<'_, AppState>,
+    pairing_code: Option<String>,
+) -> Result<(), String> {
+    if pairing_code.as_ref().is_some_and(|code| code.len() > 80) {
         return Err("Некорректный код сопряжения".into());
     }
     // Keep the session alive until the local request completes; never accept a destination from the UI.
@@ -232,29 +313,52 @@ async fn join_in_minecraft(state: State<'_, AppState>, pairing_code: String) -> 
     let endpoint = session
         .endpoint
         .ok_or("Локальный адрес гостевого туннеля недоступен")?;
+    let Some(pairing_code) = pairing_code else {
+        let found = companions().await;
+        let candidates = prefer(&found, blockops_local_discovery::GameState::Menu);
+        let companion = match candidates.as_slice() {
+            [] => return Err(NO_COMPANION.into()),
+            [companion] => companion,
+            _ => return Err("Запущено несколько копий Minecraft с модом BlockOps. Оставьте одну или введите код мода вручную.".into()),
+        };
+        return blockops_coordination::local_bridge::request_join(
+            companion.port,
+            &companion.token,
+            endpoint,
+        )
+        .await
+        .map_err(|_| {
+            "Minecraft не начал подключение. Откройте главное меню игры и попробуйте снова."
+                .to_owned()
+        });
+    };
     blockops_coordination::local_bridge::request_paired_join(&pairing_code, endpoint).await
         .map_err(|_| "Не удалось начать подключение в Minecraft. Откройте главное меню игры и получите новый код мода.".to_owned())
 }
 
+/// Without a pairing code, the open world is found through private discovery.
 #[tauri::command]
 async fn detect_open_world(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
-    pairing_code: String,
+    pairing_code: Option<String>,
 ) -> Result<WorldDetection, String> {
-    if pairing_code.len() > 80 {
+    if pairing_code.as_ref().is_some_and(|code| code.len() > 80) {
         return Err("Некорректный код сопряжения".into());
     }
     let guard = state.0.lock().await;
     if guard.is_some() {
         return Err("Сначала отключите текущее соединение".into());
     }
-    let watch = blockops_coordination::local_bridge::watch_world(&pairing_code)
-        .await
-        .map_err(|_| {
-            "Не удалось определить порт. Откройте мир для сети и получите новый код мода."
-                .to_owned()
-        })?;
+    let watch = match pairing_code {
+        Some(code) => blockops_coordination::local_bridge::watch_world(&code)
+            .await
+            .map_err(|_| {
+                "Не удалось определить порт. Откройте мир для сети и получите новый код мода."
+                    .to_owned()
+            })?,
+        None => find_open_world().await?,
+    };
     let id = NEXT_WORLD.fetch_add(1, Ordering::Relaxed);
     let port = watch.port;
     let mut alive = watch.alive.clone();
@@ -420,6 +524,7 @@ fn main() {
             join_in_minecraft,
             detect_open_world,
             world_watch_alive,
+            local_minecraft,
             open_eula,
             discover_minecraft_profiles,
             get_minecraft_selection,
