@@ -8,6 +8,10 @@ export function explainError(error: unknown): string {
   if (message.includes('Coordinator must be an origin URL') || message.includes('relative URL without a base') || message.includes('invalid domain') || message.includes('empty host')) {
     return 'Некорректный адрес сервиса координации. Укажите его без пути и параметров, например https://connect.example.org.';
   }
+  if (message.includes('No relay of the public network accepted a reservation')) return 'Не удалось подключиться к публичной сети. Проверьте доступ в интернет и повторите; если не поможет, понадобится свой relay-сервер.';
+  if (message.includes('No host with this code was found')) return 'Друг с таким кодом не найден в сети. Проверьте код: у друга BlockOps должен быть открыт, а код ещё не использован.';
+  if (message.includes('does not match this host') || message.includes('The host refused access')) return 'Код не подошёл. Попросите друга создать новый.';
+  if (message.includes('Direct connection failed')) return 'Не удалось соединиться с другом напрямую: ваши сети этого не позволяют. Так бывает с мобильным интернетом и у некоторых провайдеров; для таких случаев понадобится свой relay-сервер.';
   if (message.includes('error sending request')) return 'Не удалось связаться с сервисом координации. Проверьте его адрес в дополнительных настройках подключения и доступ в интернет.';
   return message;
 }

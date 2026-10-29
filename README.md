@@ -3,6 +3,7 @@
 Open-source desktop foundation for hosting Minecraft Java and connecting friends through
 an encrypted application-level TCP tunnel. **Iteration 3: Vanilla manager, identity-bound one-time codes and working relay tunnel.** Windows is the only desktop target for the current release. Linux is used for headless development and CI; a Linux or macOS desktop release is not planned for this stage.
 
+- [Playing without a server of our own](docs/direct.md)
 - [One-time codes, participant revocation and coordinator deployment](docs/coordination.md)
 - [Vanilla server installation, lifecycle and current limitations](docs/servers.md)
 - [Architecture, feasibility, trust boundaries and roadmap](docs/architecture.md)
@@ -38,7 +39,10 @@ check additionally starts **two CLI client processes** and a relay process.
 
 - Vanilla 1.21.1 and 1.21.4 manager: official verified JAR/Java downloads, explicit EULA acceptance,
   SQLite registry, isolated worlds, safe settings, process supervisor and local command console.
-- Coordination service: single-use codes, guest identity binding, individual revocation,
+- Serverless mode by default: players meet through the public libp2p (IPFS) network, prove a
+  one-use 80-bit code with SPAKE2 bound to their peer ids, and play over a hole-punched direct
+  connection; public relays carry only the meeting.
+- Optional coordination service: single-use codes, guest identity binding, individual revocation,
   bounded request rates and fail-closed access on coordinator outage.
 - Offline world backups with checksum verification and recoverable restoration; the previous world is retained.
 - Edit managed settings for stopped servers with crash recovery, including the Minecraft whitelist.
@@ -51,13 +55,15 @@ check additionally starts **two CLI client processes** and a relay process.
 - Experimental Fabric 1.21.1 companion: on Windows the desktop notices an opened LAN world by itself,
   one click prepares the connection and a copyable code, and the guest's Minecraft joins once it
   reaches the main menu. It works through an owner-only descriptor and an HMAC-authenticated one-use
-  local bridge; a manually copied code remains as a fallback.
+  local bridge; a manually copied code remains as a fallback. The installer carries the mod, which
+  needs only Fabric Loader, and the desktop installs it into a Fabric 1.21.1 launcher profile after
+  the player confirms.
 
 ## Not included yet
 
 Other Minecraft versions/loaders, automatic backups, accounts,
-reliable NAT test matrix, automatic reconnect and signed installers. Nothing disables `online-mode` or opens router ports. Internet operation
-requires an explicitly configured, reachable relay. The desktop uses per-member identity-bound codes. Legacy blockops-tunnel CLI JSON invites
+reliable NAT test matrix, automatic reconnect and signed installers. Nothing disables `online-mode` or opens router ports. Internet play
+works directly when hole punching succeeds; otherwise it needs an explicitly configured, reachable relay. The desktop uses per-member identity-bound codes. Legacy blockops-tunnel CLI JSON invites
 remain bearer secrets and are intended only for PoC compatibility.
 
 The network core and an actual installed Vanilla server were tested in this cloud Linux instance.

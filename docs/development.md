@@ -33,7 +33,9 @@ npm run build
 npm run desktop
 ```
 
-For a Windows installer: `npm run tauri -w apps/desktop -- build`. This targets NSIS;
+For a Windows installer: `npm run tauri -w apps/desktop -- build`. To bundle the Fabric mod,
+first build it and copy the jar into `apps/desktop/src-tauri/resources/mod/` (see the README
+there); CI does this, and a build without it reports that it carries no mod. This targets NSIS;
 code signing and release distribution are not configured. Do not distribute this PoC as a
 finished hosting product. The Windows CI job builds an unsigned NSIS installer and smoke-tests installation, native window startup, close and removal. It does not exercise interactions in the GUI or a real Minecraft session.
 

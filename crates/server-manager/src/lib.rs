@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod backups;
+pub mod blockops_mod;
 pub mod java;
 pub mod minecraft_profiles;
 pub mod minecraft_selection;

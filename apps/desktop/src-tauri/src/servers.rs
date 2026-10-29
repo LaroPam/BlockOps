@@ -195,6 +195,7 @@ pub async fn invite_server(
     tunnel: State<'_, super::AppState>,
     id: String,
     relay: Option<String>,
+    direct: Option<bool>,
 ) -> Result<super::View, String> {
     let processes = state.processes.lock().await;
     if state.closing.load(std::sync::atomic::Ordering::SeqCst) {
@@ -211,6 +212,7 @@ pub async fn invite_server(
         relay,
         Some(format!("{id}:{}", process.generation)),
         None,
+        direct.unwrap_or(false),
     )
     .await
 }

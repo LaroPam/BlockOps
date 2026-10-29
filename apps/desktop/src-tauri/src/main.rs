@@ -18,9 +18,39 @@ struct WorldDetection {
 }
 struct AppState(
     Mutex<Option<(String, Session, Option<String>)>>,
-    Mutex<Vec<blockops_coordination::client::HostedInvite>>,
+    Mutex<Vec<Invite>>,
     Mutex<Option<WorldSlot>>,
 );
+
+/// A friend's code, issued by a coordinator or announced on the public network.
+enum Invite {
+    Coordinated(blockops_coordination::client::HostedInvite),
+    Direct(blockops_tunnel::direct::DirectCode),
+}
+impl Invite {
+    fn status(&self) -> blockops_coordination::client::CodeStatus {
+        match self {
+            Self::Coordinated(invite) => invite.status.borrow().clone(),
+            Self::Direct(code) => {
+                let status = code.status.borrow();
+                blockops_coordination::client::CodeStatus {
+                    id: status.id.clone(),
+                    code: status.code.clone(),
+                    expires_at: status.expires_at,
+                    phase: status.phase.clone(),
+                    peer: status.peer.clone(),
+                    error: status.error.clone(),
+                }
+            }
+        }
+    }
+    async fn revoke(self) {
+        match self {
+            Self::Coordinated(invite) => invite.revoke().await,
+            Self::Direct(code) => code.revoke().await,
+        }
+    }
+}
 #[derive(Serialize)]
 struct View {
     mode: String,
@@ -41,14 +71,24 @@ fn view(mode: &str, session: &Session) -> View {
         transport: status.transport.clone(),
     }
 }
+/// `direct` meets friends through the public network instead of a coordinator and relay.
 #[tauri::command]
 async fn host(
     state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
     world_watch_id: Option<u64>,
+    direct: Option<bool>,
 ) -> Result<View, String> {
-    make_host(state, target, relay, None, world_watch_id).await
+    make_host(
+        state,
+        target,
+        relay,
+        None,
+        world_watch_id,
+        direct.unwrap_or(false),
+    )
+    .await
 }
 async fn make_host(
     state: State<'_, AppState>,
@@ -56,9 +96,9 @@ async fn make_host(
     relay: Option<String>,
     owner: Option<String>,
     world_watch_id: Option<u64>,
+    direct: bool,
 ) -> Result<View, String> {
-    let mut guard = state.0.lock().await;
-    if guard.is_some() {
+    if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
     let target: std::net::SocketAddr = target
@@ -68,28 +108,45 @@ async fn make_host(
         .map(|r| r.parse())
         .transpose()
         .map_err(|_| "Некорректный multiaddr relay")?;
-    let mut worlds = state.2.lock().await;
-    if let Some(id) = world_watch_id {
-        let slot = worlds
-            .as_ref()
-            .filter(|slot| slot.id == id)
-            .ok_or("Мир больше не отслеживается; определите порт заново")?;
-        let watch = slot
-            .watch
-            .as_ref()
-            .ok_or("Мир закрыт или связь с модом потеряна")?;
-        if !*watch.alive.borrow()
-            || target != std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, watch.port))
-        {
-            return Err("Мир закрыт или его порт изменился; определите порт заново".into());
+    {
+        let mut worlds = state.2.lock().await;
+        if let Some(id) = world_watch_id {
+            let slot = worlds
+                .as_ref()
+                .filter(|slot| slot.id == id)
+                .ok_or("Мир больше не отслеживается; определите порт заново")?;
+            let watch = slot
+                .watch
+                .as_ref()
+                .ok_or("Мир закрыт или связь с модом потеряна")?;
+            if !*watch.alive.borrow()
+                || target != std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, watch.port))
+            {
+                return Err("Мир закрыт или его порт изменился; определите порт заново".into());
+            }
+        } else {
+            worlds.take();
         }
-    } else {
-        worlds.take();
     }
-    let session =
-        blockops_tunnel::host_controlled(target, relay, std::time::Duration::from_secs(3600))
-            .await
-            .map_err(|e| e.to_string())?;
+    // Joining the public network takes up to a minute; the status lock is not held meanwhile.
+    let lifetime = std::time::Duration::from_secs(3600);
+    let session = if direct {
+        blockops_tunnel::direct::host_direct(
+            target,
+            blockops_tunnel::direct::Network::public(),
+            lifetime,
+        )
+        .await
+    } else {
+        blockops_tunnel::host_controlled(target, relay, lifetime).await
+    }
+    .map_err(|e| e.to_string())?;
+    let mut guard = state.0.lock().await;
+    if guard.is_some() {
+        session.stop().await;
+        return Err("Сначала остановите текущую сессию".into());
+    }
+    let worlds = state.2.lock().await;
     if let Some(id) = world_watch_id {
         if !worlds
             .as_ref()
@@ -155,33 +212,47 @@ async fn stop(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-async fn create_code(state: State<'_, AppState>, coordinator: String) -> Result<(), String> {
+async fn create_code(
+    state: State<'_, AppState>,
+    coordinator: String,
+) -> Result<blockops_coordination::client::CodeStatus, String> {
     let guard = state.0.lock().await;
     let (_, session, _) = guard.as_ref().ok_or("Сначала создайте туннель хоста")?;
     let mut codes = state.1.lock().await;
-    codes.retain(|c| matches!(c.status.borrow().phase.as_str(), "waiting" | "active"));
+    codes.retain(|c| {
+        matches!(
+            c.status().phase.as_str(),
+            "publishing" | "waiting" | "active"
+        )
+    });
     if codes.len() >= 8 {
         return Err("Максимум 8 приглашений на сессию".into());
     }
-    let code = blockops_coordination::client::Client::new(&coordinator)
-        .map_err(|e| e.to_string())?
-        .publish(session, 600)
-        .await
-        .map_err(|e| e.to_string())?;
+    let code = if session.is_direct() {
+        Invite::Direct(
+            session
+                .issue_direct_code(std::time::Duration::from_secs(600))
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        Invite::Coordinated(
+            blockops_coordination::client::Client::new(&coordinator)
+                .map_err(|e| e.to_string())?
+                .publish(session, 600)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    let status = code.status();
     codes.push(code);
-    Ok(())
+    Ok(status)
 }
 #[tauri::command]
 async fn codes(
     state: State<'_, AppState>,
 ) -> Result<Vec<blockops_coordination::client::CodeStatus>, String> {
-    Ok(state
-        .1
-        .lock()
-        .await
-        .iter()
-        .map(|c| c.status.borrow().clone())
-        .collect())
+    Ok(state.1.lock().await.iter().map(Invite::status).collect())
 }
 #[tauri::command]
 async fn revoke_code(state: State<'_, AppState>, id: String) -> Result<(), String> {
@@ -189,7 +260,7 @@ async fn revoke_code(state: State<'_, AppState>, id: String) -> Result<(), Strin
         let mut codes = state.1.lock().await;
         let index = codes
             .iter()
-            .position(|c| c.status.borrow().id == id)
+            .position(|c| c.status().id == id)
             .ok_or("Приглашение не найдено")?;
         codes.remove(index)
     };
@@ -202,16 +273,33 @@ async fn join_code(
     coordinator: String,
     code: String,
 ) -> Result<View, String> {
-    let mut guard = state.0.lock().await;
-    if guard.is_some() {
+    if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
     state.2.lock().await.take();
-    let session = blockops_coordination::client::Client::new(&coordinator)
-        .map_err(|e| e.to_string())?
-        .join(&code, "127.0.0.1:0".parse().unwrap())
+    // A four-group code was announced on the public network; others come from a coordinator.
+    let session = if blockops_tunnel::pake::is_direct_code(&code) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| e.to_string())?;
+        blockops_tunnel::direct::join_direct(
+            &code,
+            listener,
+            blockops_tunnel::direct::Network::public(),
+        )
         .await
-        .map_err(|e| e.to_string())?;
+    } else {
+        blockops_coordination::client::Client::new(&coordinator)
+            .map_err(|e| e.to_string())?
+            .join(&code, "127.0.0.1:0".parse().unwrap())
+            .await
+    }
+    .map_err(|e| e.to_string())?;
+    let mut guard = state.0.lock().await;
+    if guard.is_some() {
+        session.stop().await;
+        return Err("Сначала остановите текущую сессию".into());
+    }
     let result = view("join", &session);
     *guard = Some(("join".into(), session, None));
     Ok(result)
@@ -415,16 +503,21 @@ async fn world_watch_alive(state: State<'_, AppState>, id: u64) -> Result<bool, 
         .is_some_and(|watch| *watch.alive.borrow()))
 }
 
+/// The Minecraft Launcher folder: the one the user typed, or the standard one.
+fn launcher_root(folder: Option<String>) -> Result<std::path::PathBuf, String> {
+    match folder.filter(|value| !value.trim().is_empty()) {
+        Some(folder) => Ok(std::path::PathBuf::from(folder)),
+        None => std::env::var_os("APPDATA")
+            .map(|base| std::path::PathBuf::from(base).join(".minecraft"))
+            .ok_or_else(|| "Укажите путь к папке Minecraft вручную".to_owned()),
+    }
+}
+
 #[tauri::command]
 async fn discover_minecraft_profiles(
     folder: Option<String>,
 ) -> Result<Vec<blockops_server_manager::minecraft_profiles::DiscoveredProfile>, String> {
-    let root = match folder.filter(|value| !value.trim().is_empty()) {
-        Some(folder) => std::path::PathBuf::from(folder),
-        None => std::env::var_os("APPDATA")
-            .map(|base| std::path::PathBuf::from(base).join(".minecraft"))
-            .ok_or("Укажите путь к папке Minecraft вручную")?,
-    };
+    let root = launcher_root(folder)?;
     tokio::task::spawn_blocking(move || {
         blockops_server_manager::minecraft_profiles::discover(&root)
     })
@@ -434,6 +527,85 @@ async fn discover_minecraft_profiles(
         "Не удалось прочитать профили Minecraft Launcher. Проверьте выбранную папку.".to_owned()
     })
 }
+/// The mod jar the installer placed beside the application, if this build carries one.
+fn bundled_mod(
+    app: &tauri::AppHandle,
+) -> Option<blockops_server_manager::blockops_mod::BundledMod> {
+    let directory = app.path().resource_dir().ok()?.join("mod");
+    let jar = std::fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "jar"))?;
+    blockops_server_manager::blockops_mod::BundledMod::load(&jar).ok()
+}
+
+fn explain_mod_error(error: blockops_server_manager::blockops_mod::InstallError) -> String {
+    use blockops_server_manager::blockops_mod::InstallError;
+    match error {
+        InstallError::NotFabric => "Эта папка не принадлежит сборке Fabric 1.21.1 из Minecraft Launcher. Мод BlockOps работает только с Fabric 1.21.1.".into(),
+        InstallError::SharedWith(name) => format!("Из этой папки также запускается профиль «{name}», и мод BlockOps может помешать ему. Укажите для сборки Fabric 1.21.1 отдельную папку игры в настройках профиля Minecraft Launcher."),
+        InstallError::InUse => "Файл мода занят. Закройте Minecraft и повторите.".into(),
+        InstallError::NameTaken(name) => format!("В папке mods уже есть файл {name}, но это не мод BlockOps. Переименуйте или удалите его и повторите."),
+        InstallError::Other(_) => "Не удалось изменить папку модов. Проверьте папку сборки и права доступа.".into(),
+    }
+}
+
+#[tauri::command]
+async fn blockops_mod_status(
+    app: tauri::AppHandle,
+    game_dir: String,
+) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        blockops_server_manager::blockops_mod::status(
+            std::path::Path::new(&game_dir),
+            bundled_mod(&app).as_ref(),
+        )
+    })
+    .await
+    .map_err(|_| "Не удалось проверить мод BlockOps".to_owned())?
+    .map_err(|_| "Не удалось прочитать папку модов этой сборки.".to_owned())
+}
+
+/// Re-inspects the launcher profiles itself: the interface's view is never trusted.
+#[tauri::command]
+async fn install_blockops_mod(
+    app: tauri::AppHandle,
+    folder: Option<String>,
+    game_dir: String,
+) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
+    let root = launcher_root(folder)?;
+    let bundled = bundled_mod(&app).ok_or(
+        "В этой сборке BlockOps нет мода. Установите BlockOps из сборки, в которую он входит.",
+    )?;
+    tokio::task::spawn_blocking(move || {
+        blockops_server_manager::blockops_mod::install(
+            &root,
+            std::path::Path::new(&game_dir),
+            &bundled,
+        )
+    })
+    .await
+    .map_err(|_| "Не удалось установить мод BlockOps".to_owned())?
+    .map_err(explain_mod_error)
+}
+
+#[tauri::command]
+async fn remove_blockops_mod(
+    app: tauri::AppHandle,
+    game_dir: String,
+) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        blockops_server_manager::blockops_mod::remove(
+            std::path::Path::new(&game_dir),
+            bundled_mod(&app).as_ref(),
+        )
+    })
+    .await
+    .map_err(|_| "Не удалось удалить мод BlockOps".to_owned())?
+    .map_err(explain_mod_error)
+}
+
 #[tauri::command]
 async fn get_minecraft_selection(
     state: tauri::State<'_, servers::Servers>,
@@ -527,6 +699,9 @@ fn main() {
             local_minecraft,
             open_eula,
             discover_minecraft_profiles,
+            blockops_mod_status,
+            install_blockops_mod,
+            remove_blockops_mod,
             get_minecraft_selection,
             save_minecraft_selection,
             host,

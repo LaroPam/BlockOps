@@ -7,6 +7,9 @@ $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$
 if ($install.ExitCode -ne 0) { throw "Silent installation failed with exit code $($install.ExitCode)." }
 $exe = Get-ChildItem -Path $installDir -Filter '*.exe' -File | Where-Object { $_.Name -ne 'uninstall.exe' } | Select-Object -First 1
 if (-not $exe) { throw 'Application executable missing after installation.' }
+$bundledMod = Get-ChildItem -Path (Join-Path $installDir 'mod') -Filter 'blockops-fabric-client-*.jar' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $bundledMod) { throw 'Bundled BlockOps mod missing after installation.' }
+Write-Host "Installed application carries the mod $($bundledMod.Name)."
 # No server is created and no EULA is accepted in this test. Verify the installed
 # binary opens a native window and handles a normal close request.
 $app = Start-Process -FilePath $exe.FullName -WorkingDirectory $installDir -PassThru

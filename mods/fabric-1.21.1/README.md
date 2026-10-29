@@ -1,8 +1,10 @@
 # BlockOps Client: Fabric 1.21.1 prototype
 
 This is a client-only Fabric mod for Minecraft Java **1.21.1**, Java 21 and Fabric Loader
-0.16.10 or newer. It requires Fabric API. No Minecraft binaries are included in this
-repository or distributed inside the mod.
+0.16.10 or newer. It needs nothing else: the three Fabric API modules it uses
+(`fabric-api-base`, `fabric-command-api-v2`, `fabric-lifecycle-events-v1`, Apache-2.0, each with
+its license) are nested in the jar, and a separately installed, newer Fabric API takes
+precedence. No Minecraft binaries are included in this repository or distributed inside the mod.
 
 On Windows the mod advertises a one-use local bridge through a private descriptor, so the
 BlockOps desktop on the same computer finds it without a copied code (see below). The mod also
@@ -13,7 +15,21 @@ request its current port from Minecraft without parsing LAN broadcasts. The desk
 keep a one-use authenticated watch open to stop its associated tunnel after world closure.
 After the desktop has established a guest tunnel, the user can paste this secret into BlockOps
 and request that Minecraft start connecting. This experimental path is not yet verified in a
-real Minecraft client and must not be installed automatically.
+real Minecraft client.
+
+## Installation by the desktop
+
+The Windows installer of BlockOps carries this jar. In **Найти мою сборку Minecraft** the
+desktop offers to install, update or remove it for an official Minecraft Launcher profile, and
+writes only after the player confirms. It re-reads the launcher profiles itself and requires
+that a complete Fabric 1.21.1 profile runs from the chosen game folder and that every other
+profile running from that folder is Fabric 1.21.1 or Vanilla: the mod's `minecraft = 1.21.1`
+dependency would stop a Fabric profile of another version from starting. It recognises its own
+jars by the `blockops` id in `fabric.mod.json`, writes under a hidden temporary name, removes
+older copies and renames the new file into `mods`; other files are never touched. If the
+mod's file name is taken by a file not verified as BlockOps, it refuses without changing anything. A file held
+open by a running game is reported instead of half-replaced. Other launchers are not supported
+yet; their users can copy the jar into `mods` manually.
 
 ## Build
 
