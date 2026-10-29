@@ -458,6 +458,7 @@ fn explain_mod_error(error: blockops_server_manager::blockops_mod::InstallError)
         InstallError::NotFabric => "Эта папка не принадлежит сборке Fabric 1.21.1 из Minecraft Launcher. Мод BlockOps работает только с Fabric 1.21.1.".into(),
         InstallError::SharedWith(name) => format!("Из этой папки также запускается профиль «{name}», и мод BlockOps может помешать ему. Укажите для сборки Fabric 1.21.1 отдельную папку игры в настройках профиля Minecraft Launcher."),
         InstallError::InUse => "Файл мода занят. Закройте Minecraft и повторите.".into(),
+        InstallError::NameTaken(name) => format!("В папке mods уже есть файл {name}, но это не мод BlockOps. Переименуйте или удалите его и повторите."),
         InstallError::Other(_) => "Не удалось изменить папку модов. Проверьте папку сборки и права доступа.".into(),
     }
 }

@@ -26,7 +26,8 @@ that a complete Fabric 1.21.1 profile runs from the chosen game folder and that 
 profile running from that folder is Fabric 1.21.1 or Vanilla: the mod's `minecraft = 1.21.1`
 dependency would stop a Fabric profile of another version from starting. It recognises its own
 jars by the `blockops` id in `fabric.mod.json`, writes under a hidden temporary name, removes
-older copies and renames the new file into `mods`; other files are never touched. A file held
+older copies and renames the new file into `mods`; other files are never touched. If the
+mod's file name is taken by a file not verified as BlockOps, it refuses without changing anything. A file held
 open by a running game is reported instead of half-replaced. Other launchers are not supported
 yet; their users can copy the jar into `mods` manually.
 

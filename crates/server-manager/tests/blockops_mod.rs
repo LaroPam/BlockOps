@@ -178,6 +178,41 @@ fn refuses_folders_where_the_mod_could_break_or_never_load() {
 }
 
 #[test]
+fn never_overwrites_a_foreign_file_under_the_mods_name() {
+    let root = launcher(json!({
+        "fabric": {"lastVersionId": "fabric-loader-0.16.10-1.21.1"}
+    }));
+    let mods = root.path().join("mods");
+    fs::create_dir_all(&mods).unwrap();
+    // Another mod renamed to the BlockOps file name, an unreadable file, and an old copy.
+    jar(
+        &mods.join("blockops-fabric-client-0.1.0.jar"),
+        "other",
+        "1.0.0",
+    );
+    jar(&mods.join("old-blockops.jar"), "blockops", "0.0.9");
+    let source = tempfile::tempdir().unwrap();
+    let mod_file = bundled(source.path(), "0.1.0");
+    for _ in 0..2 {
+        let foreign = fs::read(mods.join("blockops-fabric-client-0.1.0.jar")).unwrap();
+        assert!(matches!(
+            install(root.path(), root.path(), &mod_file),
+            Err(InstallError::NameTaken(name)) if name == "blockops-fabric-client-0.1.0.jar"
+        ));
+        assert_eq!(
+            fs::read(mods.join("blockops-fabric-client-0.1.0.jar")).unwrap(),
+            foreign
+        );
+        assert_eq!(
+            names(&mods),
+            ["blockops-fabric-client-0.1.0.jar", "old-blockops.jar"],
+            "folder changed on refusal"
+        );
+        fs::write(mods.join("blockops-fabric-client-0.1.0.jar"), b"not a zip").unwrap();
+    }
+}
+
+#[test]
 fn only_the_blockops_mod_is_accepted_as_bundled() {
     let source = tempfile::tempdir().unwrap();
     let other = source.path().join("other.jar");
