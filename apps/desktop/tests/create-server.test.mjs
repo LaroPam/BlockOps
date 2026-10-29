@@ -205,6 +205,40 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     assert.deepEqual(await guest.evaluate(() => window.__joins), [{ pairingCode: null }]);
     await guest.close();
 
+    // Service addresses survive a restart, can be reset, and failures read as advice.
+    const settings = await browser.newPage();
+    await settings.addInitScript(() => {
+      let session = null;
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'host') {
+          session = { mode: 'host', endpoint: null, active_connections: 0, last_error: null, transport: null };
+          return session;
+        }
+        if (command === 'create_code') throw `error sending request for url (${args.coordinator}/v1/invites)`;
+        if (command === 'status') return session;
+        if (command === 'servers' || command === 'codes') return [];
+        return null;
+      }};
+    });
+    await settings.goto(baseUrl);
+    await settings.getByText('Дополнительные настройки подключения', { exact: true }).click();
+    await settings.getByLabel('Адрес сервиса координации').fill('https://connect.example.org');
+    await settings.getByLabel('Адрес relay для вашего сервера').fill('/ip4/192.0.2.1/tcp/4001/p2p/peer');
+    await settings.reload();
+    await settings.getByText('Дополнительные настройки подключения', { exact: true }).click();
+    assert.equal(await settings.getByLabel('Адрес сервиса координации').inputValue(), 'https://connect.example.org');
+    assert.equal(await settings.getByLabel('Адрес relay для вашего сервера').inputValue(), '/ip4/192.0.2.1/tcp/4001/p2p/peer');
+    await settings.getByLabel('Порт мира Minecraft').fill('25565');
+    await settings.getByRole('button', { name: 'Пригласить друга' }).click();
+    await settings.getByText(/код для друга не создан: Не удалось связаться с сервисом координации/).waitFor();
+    await settings.getByRole('button', { name: 'Отключить соединение' }).waitFor();
+    await settings.evaluate(() => window.__TAURI_INTERNALS__.invoke = async command => command === 'servers' || command === 'codes' ? [] : null);
+    await settings.getByRole('button', { name: 'Отключить соединение' }).click();
+    await settings.getByRole('button', { name: 'Вернуть локальные настройки' }).click();
+    assert.equal(await settings.getByLabel('Адрес сервиса координации').inputValue(), 'http://127.0.0.1:8080');
+    assert.equal(await settings.getByLabel('Адрес relay для вашего сервера').inputValue(), '');
+    await settings.close();
+
     const profiles = await browser.newPage();
     await profiles.addInitScript(() => {
       window.__calls = [];

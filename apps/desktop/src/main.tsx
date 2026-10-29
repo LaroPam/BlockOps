@@ -5,6 +5,7 @@ import './style.css';
 import { Servers } from './Servers';
 import { Codes } from './Codes';
 import { MinecraftProfiles } from './MinecraftProfiles';
+import { explainError } from './errors';
 
 type Session = {
   mode: string;
@@ -17,12 +18,16 @@ type Session = {
 /** What Minecraft with the BlockOps mod reports doing on this computer. */
 type LocalMinecraft = { running: number; open_worlds: number; in_menu: number };
 
-function explainError(error: unknown): string {
-  const message = String(error);
-  if (message.includes('404')) return 'Код не найден, уже использован или срок его действия истёк. Попросите друга создать новый.';
-  if (message.includes('429')) return 'Слишком много попыток. Подождите минуту и попробуйте ещё раз.';
-  if (message.includes('504')) return 'Сервер друга не подтвердил подключение. Попросите его создать новый код.';
-  return message;
+const SETTINGS_KEY = 'blockops.connection';
+const DEFAULT_COORDINATOR = 'http://127.0.0.1:8080';
+
+/** Service addresses are not secret; they are kept in this computer's webview storage. */
+function savedSettings(): { coordinator: string; relay: string } {
+  try {
+    const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null');
+    if (value && typeof value.coordinator === 'string' && typeof value.relay === 'string') return value;
+  } catch { /* Storage may be unavailable; fall back to defaults. */ }
+  return { coordinator: DEFAULT_COORDINATOR, relay: '' };
 }
 
 function App() {
@@ -32,11 +37,11 @@ function App() {
   const [hostPairingCode, setHostPairingCode] = useState('');
   const [worldFeedback, setWorldFeedback] = useState('');
   const [worldError, setWorldError] = useState('');
-  const [relay, setRelay] = useState('');
+  const [relay, setRelay] = useState(() => savedSettings().relay);
   const [invite, setInvite] = useState('');
   const [pairingCode, setPairingCode] = useState('');
   const [joinFeedback, setJoinFeedback] = useState('');
-  const [coordinator, setCoordinator] = useState('http://127.0.0.1:8080');
+  const [coordinator, setCoordinator] = useState(() => savedSettings().coordinator);
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -46,6 +51,11 @@ function App() {
   const sessionRef = useRef<HTMLElement>(null);
   const desktop = '__TAURI_INTERNALS__' in window;
   const watchingMinecraft = desktop && ((mode === 'host' && session === null) || session?.mode === 'join');
+
+  useEffect(() => {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ coordinator, relay })); }
+    catch { /* Not saved; the addresses still apply to this launch. */ }
+  }, [coordinator, relay]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -285,7 +295,8 @@ function App() {
       <input id="coordinator" disabled={session !== null} value={coordinator} onChange={e => setCoordinator(e.target.value)} placeholder="https://connect.example.org" spellCheck={false}/>
       <label htmlFor="relay">Адрес relay для вашего сервера</label>
       <input id="relay" disabled={session !== null} value={relay} onChange={e => setRelay(e.target.value)} placeholder="/ip4/…/tcp/4001/p2p/…" spellCheck={false}/>
-      <p>Для публичного сервиса нужен HTTPS. Оба игрока указывают один адрес сервиса координации; relay указывает только хозяин. Укажите адреса до создания соединения.</p>
+      <p>Для публичного сервиса нужен HTTPS. Оба игрока указывают один адрес сервиса координации; relay указывает только хозяин. Укажите адреса до создания соединения: BlockOps запомнит их на этом компьютере.</p>
+      <button type="button" disabled={session !== null || (coordinator === DEFAULT_COORDINATOR && relay === '')} onClick={() => { setCoordinator(DEFAULT_COORDINATOR); setRelay(''); }}>Вернуть локальные настройки</button>
       {session && <p>Чтобы изменить адреса, сначала отключите текущее соединение.</p>}
 
     </details>
