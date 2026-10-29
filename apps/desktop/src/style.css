@@ -212,3 +212,8 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .mod-confirm code { display: inline; }
 .primary-inline { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
 .primary-inline:hover:not(:disabled) { background: var(--text); color: var(--accent-ink); }
+.connection-choice { border: 0; padding: 0; margin: 8px 0 16px; }
+.connection-choice legend { margin: 12px 0 4px; color: var(--text); font-size: 14px; font-weight: 600; }
+.connection-choice label { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
+.connection-choice input { width: auto; min-height: 0; }
+.connection-choice p { margin: 4px 0 8px 26px; font-size: 14px; }

@@ -104,6 +104,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     const [hostArgs] = await lan.evaluate(() => window.__calls);
     assert.equal(hostArgs.target, '127.0.0.1:54321');
     assert.equal(hostArgs.relay, null);
+    assert.equal(hostArgs.direct, true, 'without a configured service the host meets friends directly');
     assert.equal(hostArgs.worldWatchId, 7);
     await lan.getByRole('button', { name: 'Создать одноразовый код' }).waitFor();
     // One click prepares the connection and the first friend's code.
@@ -199,6 +200,17 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     });
     await invited.goto(baseUrl);
     await invited.getByRole('button', { name: /Присоединиться/ }).click();
+    // A serverless invitation carries a four-group code.
+    await invited.getByLabel('Приглашение или код').evaluate(input => {
+      const data = new DataTransfer();
+      data.setData('text/plain', 'Заходи! Код приглашения: ABCD-EFGH-JKMN-PQRS. Он одноразовый.');
+      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await invited.waitForFunction(() => window.__joins.length === 1);
+    assert.equal((await invited.evaluate(() => window.__joins))[0].code, 'ABCD-EFGH-JKMN-PQRS');
+    await invited.evaluate(() => { window.__joins = []; });
+    await invited.reload();
+    await invited.getByRole('button', { name: /Присоединиться/ }).click();
     const field = invited.getByLabel('Приглашение или код');
     const paste = text => field.evaluate((input, value) => {
       const data = new DataTransfer();
@@ -219,10 +231,10 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await guest.addInitScript(() => {
       window.__local = { running: 1, open_worlds: 0, in_menu: 0 };
       window.__joins = [];
-      const session = { mode: 'join', endpoint: '127.0.0.1:34567', active_connections: 0, last_error: null, transport: null };
+      window.__session = { mode: 'join', endpoint: '127.0.0.1:34567', active_connections: 0, last_error: null, transport: null };
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         if (command === 'local_minecraft') return window.__local;
-        if (command === 'status') return session;
+        if (command === 'status') return window.__session;
         if (command === 'join_in_minecraft') { window.__joins.push(args); return null; }
         if (command === 'servers') return [];
         return null;
@@ -232,6 +244,12 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await guest.getByText(/Откройте главное меню Minecraft: игра сама подключится/).waitFor();
     assert.equal(await guest.evaluate(() => window.__joins.length), 0, 'joined before Minecraft was ready');
     await guest.evaluate(() => { window.__local = { running: 1, open_worlds: 0, in_menu: 1 }; });
+    // Minecraft waits in the menu until the route to the host is up.
+    await guest.getByText('Устанавливаем соединение с другом…').waitFor();
+    await delay(2000);
+    assert.equal(await guest.evaluate(() => window.__joins.length), 0, 'joined before the route was ready');
+    await guest.evaluate(() => { window.__session = { ...window.__session, transport: 'direct' }; });
+    await guest.getByText('Соединение с другом установлено напрямую.').waitFor();
     await guest.getByText(/Minecraft начал попытку подключения/).waitFor();
     await delay(3500); // Several more polls must not repeat the request.
     assert.deepEqual(await guest.evaluate(() => window.__joins), [{ pairingCode: null }]);
@@ -254,10 +272,14 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     });
     await settings.goto(baseUrl);
     await settings.getByText('Дополнительные настройки подключения', { exact: true }).click();
+    assert.equal(await settings.getByLabel('Без своего сервера').isChecked(), true);
+    assert.equal(await settings.getByLabel('Адрес сервиса координации').count(), 0, 'service fields shown in serverless mode');
+    await settings.getByLabel('Через свой сервис координации').check();
     await settings.getByLabel('Адрес сервиса координации').fill('https://connect.example.org');
     await settings.getByLabel('Адрес relay для вашего сервера').fill('/ip4/192.0.2.1/tcp/4001/p2p/peer');
     await settings.reload();
     await settings.getByText('Дополнительные настройки подключения', { exact: true }).click();
+    assert.equal(await settings.getByLabel('Через свой сервис координации').isChecked(), true);
     assert.equal(await settings.getByLabel('Адрес сервиса координации').inputValue(), 'https://connect.example.org');
     assert.equal(await settings.getByLabel('Адрес relay для вашего сервера').inputValue(), '/ip4/192.0.2.1/tcp/4001/p2p/peer');
     await settings.getByLabel('Порт мира Minecraft').fill('25565');

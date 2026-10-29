@@ -19,7 +19,7 @@ function errorHint(message:string):string {
 function ActionError({message}:{message:string}) {
   return <div className="error action-error" role="alert"><strong>{errorHint(message)}</strong><details><summary>Технические подробности</summary><code>{message}</code></details></div>;
 }
-export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;onInvite:()=>void;relay:string;createSignal:number}) {
+export function Servers({desktop,onInvite,relay,direct,createSignal}:{desktop:boolean;onInvite:()=>void;relay:string;direct:boolean;createSignal:number}) {
   const [rows,setRows]=useState<Row[]>([]);
   const [loaded,setLoaded]=useState(false);
   const [listError,setListError]=useState('');
@@ -50,7 +50,7 @@ export function Servers({desktop,onInvite,relay,createSignal}:{desktop:boolean;o
       {error?.id===server.id && <ActionError message={error.message}/> }
       <div className="actions"><button disabled={!desktop||busy||!!listError||!!process&&!['stopped','failed'].includes(process.phase)} onClick={()=>action('start_server',{id:server.id})}>Запустить</button>
       <button disabled={busy||!!listError||!process||['stopped','failed','stopping'].includes(process.phase)} onClick={()=>action('stop_server',{id:server.id})}>Остановить</button>
-      <button disabled={busy||!!listError||process?.phase!=='running'} onClick={()=>action('invite_server',{id:server.id,relay:relay.trim()||null})}>Пригласить друга</button></div>
+      <button disabled={busy||!!listError||process?.phase!=='running'} onClick={()=>action('invite_server',{id:server.id,relay:relay.trim()||null,direct})}>Пригласить друга</button></div>
       <div className="server-tools"><EditSettings server={server} running={!!listError || !!process && !['stopped','failed'].includes(process.phase)} desktop={desktop} onSaved={refresh}/><Backups serverId={server.id} running={!!listError || !!process && !['stopped','failed'].includes(process.phase)} desktop={desktop}/></div>
       <Whitelist id={server.id} enabled={server.settings.whitelist} running={!listError && process?.phase==='running'}/>
       {process?.error&&<ActionError message={process.error}/>}

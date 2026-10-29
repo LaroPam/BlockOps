@@ -18,9 +18,39 @@ struct WorldDetection {
 }
 struct AppState(
     Mutex<Option<(String, Session, Option<String>)>>,
-    Mutex<Vec<blockops_coordination::client::HostedInvite>>,
+    Mutex<Vec<Invite>>,
     Mutex<Option<WorldSlot>>,
 );
+
+/// A friend's code, issued by a coordinator or announced on the public network.
+enum Invite {
+    Coordinated(blockops_coordination::client::HostedInvite),
+    Direct(blockops_tunnel::direct::DirectCode),
+}
+impl Invite {
+    fn status(&self) -> blockops_coordination::client::CodeStatus {
+        match self {
+            Self::Coordinated(invite) => invite.status.borrow().clone(),
+            Self::Direct(code) => {
+                let status = code.status.borrow();
+                blockops_coordination::client::CodeStatus {
+                    id: status.id.clone(),
+                    code: status.code.clone(),
+                    expires_at: status.expires_at,
+                    phase: status.phase.clone(),
+                    peer: status.peer.clone(),
+                    error: status.error.clone(),
+                }
+            }
+        }
+    }
+    async fn revoke(self) {
+        match self {
+            Self::Coordinated(invite) => invite.revoke().await,
+            Self::Direct(code) => code.revoke().await,
+        }
+    }
+}
 #[derive(Serialize)]
 struct View {
     mode: String,
@@ -41,14 +71,24 @@ fn view(mode: &str, session: &Session) -> View {
         transport: status.transport.clone(),
     }
 }
+/// `direct` meets friends through the public network instead of a coordinator and relay.
 #[tauri::command]
 async fn host(
     state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
     world_watch_id: Option<u64>,
+    direct: Option<bool>,
 ) -> Result<View, String> {
-    make_host(state, target, relay, None, world_watch_id).await
+    make_host(
+        state,
+        target,
+        relay,
+        None,
+        world_watch_id,
+        direct.unwrap_or(false),
+    )
+    .await
 }
 async fn make_host(
     state: State<'_, AppState>,
@@ -56,9 +96,9 @@ async fn make_host(
     relay: Option<String>,
     owner: Option<String>,
     world_watch_id: Option<u64>,
+    direct: bool,
 ) -> Result<View, String> {
-    let mut guard = state.0.lock().await;
-    if guard.is_some() {
+    if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
     let target: std::net::SocketAddr = target
@@ -68,28 +108,45 @@ async fn make_host(
         .map(|r| r.parse())
         .transpose()
         .map_err(|_| "Некорректный multiaddr relay")?;
-    let mut worlds = state.2.lock().await;
-    if let Some(id) = world_watch_id {
-        let slot = worlds
-            .as_ref()
-            .filter(|slot| slot.id == id)
-            .ok_or("Мир больше не отслеживается; определите порт заново")?;
-        let watch = slot
-            .watch
-            .as_ref()
-            .ok_or("Мир закрыт или связь с модом потеряна")?;
-        if !*watch.alive.borrow()
-            || target != std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, watch.port))
-        {
-            return Err("Мир закрыт или его порт изменился; определите порт заново".into());
+    {
+        let mut worlds = state.2.lock().await;
+        if let Some(id) = world_watch_id {
+            let slot = worlds
+                .as_ref()
+                .filter(|slot| slot.id == id)
+                .ok_or("Мир больше не отслеживается; определите порт заново")?;
+            let watch = slot
+                .watch
+                .as_ref()
+                .ok_or("Мир закрыт или связь с модом потеряна")?;
+            if !*watch.alive.borrow()
+                || target != std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, watch.port))
+            {
+                return Err("Мир закрыт или его порт изменился; определите порт заново".into());
+            }
+        } else {
+            worlds.take();
         }
-    } else {
-        worlds.take();
     }
-    let session =
-        blockops_tunnel::host_controlled(target, relay, std::time::Duration::from_secs(3600))
-            .await
-            .map_err(|e| e.to_string())?;
+    // Joining the public network takes up to a minute; the status lock is not held meanwhile.
+    let lifetime = std::time::Duration::from_secs(3600);
+    let session = if direct {
+        blockops_tunnel::direct::host_direct(
+            target,
+            blockops_tunnel::direct::Network::public(),
+            lifetime,
+        )
+        .await
+    } else {
+        blockops_tunnel::host_controlled(target, relay, lifetime).await
+    }
+    .map_err(|e| e.to_string())?;
+    let mut guard = state.0.lock().await;
+    if guard.is_some() {
+        session.stop().await;
+        return Err("Сначала остановите текущую сессию".into());
+    }
+    let worlds = state.2.lock().await;
     if let Some(id) = world_watch_id {
         if !worlds
             .as_ref()
@@ -162,16 +219,32 @@ async fn create_code(
     let guard = state.0.lock().await;
     let (_, session, _) = guard.as_ref().ok_or("Сначала создайте туннель хоста")?;
     let mut codes = state.1.lock().await;
-    codes.retain(|c| matches!(c.status.borrow().phase.as_str(), "waiting" | "active"));
+    codes.retain(|c| {
+        matches!(
+            c.status().phase.as_str(),
+            "publishing" | "waiting" | "active"
+        )
+    });
     if codes.len() >= 8 {
         return Err("Максимум 8 приглашений на сессию".into());
     }
-    let code = blockops_coordination::client::Client::new(&coordinator)
-        .map_err(|e| e.to_string())?
-        .publish(session, 600)
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = code.status.borrow().clone();
+    let code = if session.is_direct() {
+        Invite::Direct(
+            session
+                .issue_direct_code(std::time::Duration::from_secs(600))
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        Invite::Coordinated(
+            blockops_coordination::client::Client::new(&coordinator)
+                .map_err(|e| e.to_string())?
+                .publish(session, 600)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    let status = code.status();
     codes.push(code);
     Ok(status)
 }
@@ -179,13 +252,7 @@ async fn create_code(
 async fn codes(
     state: State<'_, AppState>,
 ) -> Result<Vec<blockops_coordination::client::CodeStatus>, String> {
-    Ok(state
-        .1
-        .lock()
-        .await
-        .iter()
-        .map(|c| c.status.borrow().clone())
-        .collect())
+    Ok(state.1.lock().await.iter().map(Invite::status).collect())
 }
 #[tauri::command]
 async fn revoke_code(state: State<'_, AppState>, id: String) -> Result<(), String> {
@@ -193,7 +260,7 @@ async fn revoke_code(state: State<'_, AppState>, id: String) -> Result<(), Strin
         let mut codes = state.1.lock().await;
         let index = codes
             .iter()
-            .position(|c| c.status.borrow().id == id)
+            .position(|c| c.status().id == id)
             .ok_or("Приглашение не найдено")?;
         codes.remove(index)
     };
@@ -206,16 +273,33 @@ async fn join_code(
     coordinator: String,
     code: String,
 ) -> Result<View, String> {
-    let mut guard = state.0.lock().await;
-    if guard.is_some() {
+    if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
     state.2.lock().await.take();
-    let session = blockops_coordination::client::Client::new(&coordinator)
-        .map_err(|e| e.to_string())?
-        .join(&code, "127.0.0.1:0".parse().unwrap())
+    // A four-group code was announced on the public network; others come from a coordinator.
+    let session = if blockops_tunnel::pake::is_direct_code(&code) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| e.to_string())?;
+        blockops_tunnel::direct::join_direct(
+            &code,
+            listener,
+            blockops_tunnel::direct::Network::public(),
+        )
         .await
-        .map_err(|e| e.to_string())?;
+    } else {
+        blockops_coordination::client::Client::new(&coordinator)
+            .map_err(|e| e.to_string())?
+            .join(&code, "127.0.0.1:0".parse().unwrap())
+            .await
+    }
+    .map_err(|e| e.to_string())?;
+    let mut guard = state.0.lock().await;
+    if guard.is_some() {
+        session.stop().await;
+        return Err("Сначала остановите текущую сессию".into());
+    }
     let result = view("join", &session);
     *guard = Some(("join".into(), session, None));
     Ok(result)

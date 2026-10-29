@@ -122,6 +122,11 @@ impl DirectCode {
 }
 
 impl Session {
+    /// Whether this host meets its friends through the public network.
+    pub fn is_direct(&self) -> bool {
+        self.direct.is_some()
+    }
+
     /// Announce a new one-use code for a serverless host.
     pub async fn issue_direct_code(&self, ttl: Duration) -> Result<DirectCode> {
         ensure!(

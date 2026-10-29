@@ -1,5 +1,6 @@
-/** A coordinator code: Crockford alphabet without I, L, O and U, as XXXX-XXXX-XXXX. */
-const CODE = /\b[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}\b/g;
+/** Crockford alphabet without I, L, O and U: XXXX-XXXX-XXXX from a coordinator, or a
+ * fourth group for the serverless mode. */
+const CODE = /\b[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4})?\b/g;
 
 export type CodeStatus = { id: string; code: string; expires_at: number; phase: string; peer: string | null; error: string | null };
 
