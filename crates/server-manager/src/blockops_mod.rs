@@ -100,6 +100,8 @@ pub enum InstallError {
     SharedWith(String),
     /// A mod file could not be replaced, usually because Minecraft is running.
     InUse,
+    /// The mod's file name is taken by a file not verified as the BlockOps mod.
+    NameTaken(String),
     Other(anyhow::Error),
 }
 impl fmt::Display for InstallError {
@@ -108,6 +110,7 @@ impl fmt::Display for InstallError {
             Self::NotFabric => write!(f, "No Fabric {MINECRAFT_VERSION} profile uses this folder"),
             Self::SharedWith(name) => write!(f, "Profile {name:?} also uses this folder"),
             Self::InUse => write!(f, "A mod file is in use"),
+            Self::NameTaken(name) => write!(f, "{name} is not the BlockOps mod"),
             Self::Other(error) => write!(f, "{error}"),
         }
     }
@@ -241,6 +244,19 @@ pub fn install(
     fs::create_dir_all(&mods)?;
     let found = installed(&mods)?;
     if !(found.len() == 1 && found[0].sha256 == bundled.sha256) {
+        let target = mods.join(bundled.file_name());
+        // Only a verified BlockOps jar may be replaced under this name; checked before any
+        // older copy is removed, so a refusal leaves the folder as it was.
+        if fs::symlink_metadata(&target).is_ok() {
+            let existing = target.canonicalize().ok();
+            if existing.is_none()
+                || !found
+                    .iter()
+                    .any(|old| old.path.canonicalize().ok() == existing)
+            {
+                return Err(InstallError::NameTaken(bundled.file_name()));
+            }
+        }
         // A hidden name without the .jar extension: Fabric Loader never loads a partial file.
         let mut staged = tempfile::Builder::new()
             .prefix(".blockops-")
@@ -248,7 +264,6 @@ pub fn install(
             .tempfile_in(&mods)?;
         staged.write_all(&bundled.bytes)?;
         staged.as_file().sync_all()?;
-        let target = mods.join(bundled.file_name());
         // Remove older copies first: two jars with one mod id would stop Fabric Loader.
         for old in found.iter().filter(|old| old.path != target) {
             fs::remove_file(&old.path).map_err(in_use)?;
