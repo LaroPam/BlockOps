@@ -242,10 +242,23 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     const profiles = await browser.newPage();
     await profiles.addInitScript(() => {
       window.__calls = [];
+      window.__modCalls = [];
+      window.__mod = { bundled: '0.1.0', installed: ['0.0.9'], current: false };
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         if (command === 'discover_minecraft_profiles') {
           window.__calls.push(args);
-          return [{ name: 'Моя сборка', game_dir: 'C:\\Games\\Minecraft', version_id: 'custom', minecraft_version: '1.21.1', loader: 'fabric', metadata_complete: true }];
+          return [
+            { name: 'Моя сборка', game_dir: 'C:\\Games\\Minecraft', version_id: 'custom', minecraft_version: '1.21.1', loader: 'fabric', metadata_complete: true },
+            { name: 'Старая сборка', game_dir: 'C:\\Games\\Old', version_id: 'old', minecraft_version: '1.20.4', loader: 'fabric', metadata_complete: true },
+          ];
+        }
+        if (command === 'blockops_mod_status') return window.__mod;
+        if (command === 'install_blockops_mod' || command === 'remove_blockops_mod') {
+          window.__modCalls.push([command, args]);
+          window.__mod = command === 'install_blockops_mod'
+            ? { bundled: '0.1.0', installed: ['0.1.0'], current: true }
+            : { bundled: '0.1.0', installed: [], current: false };
+          return window.__mod;
         }
         if (command === 'save_minecraft_selection') { window.__calls.push(args); return args.selection; }
         if (command === 'status' || command === 'get_minecraft_selection') return null;
@@ -259,9 +272,25 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await profiles.getByRole('button', { name: 'Найти сборки', exact: true }).click();
     await profiles.getByText('Моя сборка', { exact: true }).waitFor();
     assert.match(await profiles.locator('.profile-list').innerText(), /Загрузчик: Fabric/);
+    // The mod is offered only for Fabric 1.21.1, and installed only after confirmation.
+    await profiles.getByText('Мод BlockOps пока поддерживает только Fabric 1.21.1.').waitFor();
+    await profiles.getByText(/Установлена другая версия мода BlockOps: 0.0.9/).waitFor();
+    await profiles.getByRole('button', { name: 'Обновить мод BlockOps' }).click();
+    await profiles.getByText(/добавит мод BlockOps 0.1.0 вместо старой версии в папку mods/).waitFor();
+    await profiles.getByRole('button', { name: 'Отмена' }).click();
+    assert.equal(await profiles.evaluate(() => window.__modCalls.length), 0, 'installed without confirmation');
+    await profiles.getByRole('button', { name: 'Обновить мод BlockOps' }).click();
+    await profiles.getByRole('button', { name: 'Установить', exact: true }).click();
+    await profiles.getByText('Мод BlockOps 0.1.0 установлен.').waitFor();
+    await profiles.getByRole('button', { name: 'Удалить мод BlockOps' }).click();
+    await profiles.getByText('Мод BlockOps не установлен.').waitFor();
+    assert.deepEqual(await profiles.evaluate(() => window.__modCalls), [
+      ['install_blockops_mod', { folder: 'C:\\MyLauncher', gameDir: 'C:\\Games\\Minecraft' }],
+      ['remove_blockops_mod', { gameDir: 'C:\\Games\\Minecraft' }],
+    ]);
     const [scanArgs] = await profiles.evaluate(() => window.__calls);
     assert.equal(scanArgs.folder, 'C:\\MyLauncher');
-    await profiles.getByRole('button', { name: 'Выбрать эту папку' }).click();
+    await profiles.getByRole('button', { name: 'Выбрать эту папку' }).first().click();
     assert.equal(await profiles.getByLabel('Папка игровой сборки').inputValue(), 'C:\\Games\\Minecraft');
     assert.equal(await profiles.getByRole('button', { name: 'Сохранить выбор' }).isDisabled(), true);
     await profiles.getByLabel('Какой загрузчик установлен?').selectOption('unknown');

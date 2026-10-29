@@ -182,11 +182,11 @@ function App() {
   })();
   const needsPublicServices = coordinatorIsLocal || (mode === 'host' && !relay.trim());
   const hostHint = !local || worldWatchId !== null ? 'С модом BlockOps приложение само найдёт открытый мир на этом компьютере и его порт.'
-    : local.running === 0 ? 'Запустите Minecraft с модом BlockOps и откройте мир для сети: BlockOps найдёт его сам.'
+    : local.running === 0 ? 'Запустите Minecraft с модом BlockOps и откройте мир для сети: BlockOps найдёт его сам. Мод можно установить в разделе «Найти мою сборку Minecraft».'
     : local.open_worlds === 0 ? 'Minecraft запущен. Откройте мир для сети: BlockOps найдёт его сам.'
     : 'Найден открытый для сети мир.';
   const guestHint = !local ? 'С экспериментальным модом Fabric 1.21.1 откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.'
-    : local.running === 0 ? 'Запустите Minecraft с модом BlockOps: в главном меню игра сама подключится к миру друга.'
+    : local.running === 0 ? 'Запустите Minecraft с модом BlockOps: в главном меню игра сама подключится к миру друга. Мод можно установить в разделе «Найти мою сборку Minecraft».'
     : local.in_menu > 1 ? 'Запущено несколько копий Minecraft с модом BlockOps. Оставьте одну или войдите по коду мода.'
     : local.in_menu === 0 ? 'Откройте главное меню Minecraft: игра сама подключится к миру друга.'
     : 'Minecraft в главном меню. Если подключение не началось, нажмите кнопку.';

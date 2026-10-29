@@ -41,3 +41,6 @@ __pycache__/
 mods/fabric-1.21.1/.gradle/
 mods/fabric-1.21.1/build/
 mods/fabric-1.21.1/run/
+
+# Mod jar bundled by CI into the desktop installer
+/apps/desktop/src-tauri/resources/mod/*.jar

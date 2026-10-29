@@ -415,16 +415,21 @@ async fn world_watch_alive(state: State<'_, AppState>, id: u64) -> Result<bool, 
         .is_some_and(|watch| *watch.alive.borrow()))
 }
 
+/// The Minecraft Launcher folder: the one the user typed, or the standard one.
+fn launcher_root(folder: Option<String>) -> Result<std::path::PathBuf, String> {
+    match folder.filter(|value| !value.trim().is_empty()) {
+        Some(folder) => Ok(std::path::PathBuf::from(folder)),
+        None => std::env::var_os("APPDATA")
+            .map(|base| std::path::PathBuf::from(base).join(".minecraft"))
+            .ok_or_else(|| "Укажите путь к папке Minecraft вручную".to_owned()),
+    }
+}
+
 #[tauri::command]
 async fn discover_minecraft_profiles(
     folder: Option<String>,
 ) -> Result<Vec<blockops_server_manager::minecraft_profiles::DiscoveredProfile>, String> {
-    let root = match folder.filter(|value| !value.trim().is_empty()) {
-        Some(folder) => std::path::PathBuf::from(folder),
-        None => std::env::var_os("APPDATA")
-            .map(|base| std::path::PathBuf::from(base).join(".minecraft"))
-            .ok_or("Укажите путь к папке Minecraft вручную")?,
-    };
+    let root = launcher_root(folder)?;
     tokio::task::spawn_blocking(move || {
         blockops_server_manager::minecraft_profiles::discover(&root)
     })
@@ -434,6 +439,84 @@ async fn discover_minecraft_profiles(
         "Не удалось прочитать профили Minecraft Launcher. Проверьте выбранную папку.".to_owned()
     })
 }
+/// The mod jar the installer placed beside the application, if this build carries one.
+fn bundled_mod(
+    app: &tauri::AppHandle,
+) -> Option<blockops_server_manager::blockops_mod::BundledMod> {
+    let directory = app.path().resource_dir().ok()?.join("mod");
+    let jar = std::fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "jar"))?;
+    blockops_server_manager::blockops_mod::BundledMod::load(&jar).ok()
+}
+
+fn explain_mod_error(error: blockops_server_manager::blockops_mod::InstallError) -> String {
+    use blockops_server_manager::blockops_mod::InstallError;
+    match error {
+        InstallError::NotFabric => "Эта папка не принадлежит сборке Fabric 1.21.1 из Minecraft Launcher. Мод BlockOps работает только с Fabric 1.21.1.".into(),
+        InstallError::SharedWith(name) => format!("Из этой папки также запускается профиль «{name}», и мод BlockOps может помешать ему. Укажите для сборки Fabric 1.21.1 отдельную папку игры в настройках профиля Minecraft Launcher."),
+        InstallError::InUse => "Файл мода занят. Закройте Minecraft и повторите.".into(),
+        InstallError::Other(_) => "Не удалось изменить папку модов. Проверьте папку сборки и права доступа.".into(),
+    }
+}
+
+#[tauri::command]
+async fn blockops_mod_status(
+    app: tauri::AppHandle,
+    game_dir: String,
+) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        blockops_server_manager::blockops_mod::status(
+            std::path::Path::new(&game_dir),
+            bundled_mod(&app).as_ref(),
+        )
+    })
+    .await
+    .map_err(|_| "Не удалось проверить мод BlockOps".to_owned())?
+    .map_err(|_| "Не удалось прочитать папку модов этой сборки.".to_owned())
+}
+
+/// Re-inspects the launcher profiles itself: the interface's view is never trusted.
+#[tauri::command]
+async fn install_blockops_mod(
+    app: tauri::AppHandle,
+    folder: Option<String>,
+    game_dir: String,
+) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
+    let root = launcher_root(folder)?;
+    let bundled = bundled_mod(&app).ok_or(
+        "В этой сборке BlockOps нет мода. Установите BlockOps из сборки, в которую он входит.",
+    )?;
+    tokio::task::spawn_blocking(move || {
+        blockops_server_manager::blockops_mod::install(
+            &root,
+            std::path::Path::new(&game_dir),
+            &bundled,
+        )
+    })
+    .await
+    .map_err(|_| "Не удалось установить мод BlockOps".to_owned())?
+    .map_err(explain_mod_error)
+}
+
+#[tauri::command]
+async fn remove_blockops_mod(
+    app: tauri::AppHandle,
+    game_dir: String,
+) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        blockops_server_manager::blockops_mod::remove(
+            std::path::Path::new(&game_dir),
+            bundled_mod(&app).as_ref(),
+        )
+    })
+    .await
+    .map_err(|_| "Не удалось удалить мод BlockOps".to_owned())?
+    .map_err(explain_mod_error)
+}
+
 #[tauri::command]
 async fn get_minecraft_selection(
     state: tauri::State<'_, servers::Servers>,
@@ -527,6 +610,9 @@ fn main() {
             local_minecraft,
             open_eula,
             discover_minecraft_profiles,
+            blockops_mod_status,
+            install_blockops_mod,
+            remove_blockops_mod,
             get_minecraft_selection,
             save_minecraft_selection,
             host,

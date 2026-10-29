@@ -205,3 +205,10 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .invite-code { padding: 8px 0 16px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
 .invite-code code { padding: 8px 0 0; font-size: 22px; }
 .code-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.mod-controls { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.mod-controls > button { margin-top: 4px; margin-right: 8px; }
+.mod-confirm { margin: 12px 0; padding: 16px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-raised); }
+.mod-confirm p { margin-top: 0; color: var(--text); }
+.mod-confirm code { display: inline; }
+.primary-inline { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.primary-inline:hover:not(:disabled) { background: var(--text); color: var(--accent-ink); }

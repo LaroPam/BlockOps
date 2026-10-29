@@ -51,7 +51,9 @@ check additionally starts **two CLI client processes** and a relay process.
 - Experimental Fabric 1.21.1 companion: on Windows the desktop notices an opened LAN world by itself,
   one click prepares the connection and a copyable code, and the guest's Minecraft joins once it
   reaches the main menu. It works through an owner-only descriptor and an HMAC-authenticated one-use
-  local bridge; a manually copied code remains as a fallback.
+  local bridge; a manually copied code remains as a fallback. The installer carries the mod, which
+  needs only Fabric Loader, and the desktop installs it into a Fabric 1.21.1 launcher profile after
+  the player confirms.
 
 ## Not included yet
 

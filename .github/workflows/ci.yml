@@ -60,6 +60,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      # The installer ships the mod so the application can install it on request.
+      - name: Build the bundled Fabric mod
+        working-directory: mods/fabric-1.21.1
+        run: .\gradlew.bat --no-daemon assemble
+      - name: Bundle the mod with the desktop application
+        run: Copy-Item mods/fabric-1.21.1/build/libs/blockops-fabric-client-*.jar apps/desktop/src-tauri/resources/mod/
       - run: npm ci
       - run: npm run build
       - run: npx playwright install chromium
