@@ -4,7 +4,7 @@ exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]
-libp2p = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux", "relay", "identify", "dcutr", "macros"] }
+libp2p = { version = "0.56", features = ["tokio", "tcp", "quic", "dns", "noise", "yamux", "relay", "identify", "dcutr", "kad", "rsa", "macros"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

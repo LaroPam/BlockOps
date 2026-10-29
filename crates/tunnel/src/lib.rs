@@ -1,10 +1,12 @@
 pub mod access;
+pub mod direct;
+pub mod pake;
 // Capability-gated, single-target TCP tunnel over authenticated libp2p streams.
 use anyhow::{bail, ensure, Context, Result};
 use futures::StreamExt;
 use libp2p::{
-    dcutr, identify, noise, relay,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    dcutr, identify, kad, noise, relay,
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
 };
 use rand::RngCore;
@@ -32,9 +34,12 @@ struct Behaviour {
     identify: identify::Behaviour,
     dcutr: dcutr::Behaviour,
     streams: libp2p_stream::Behaviour,
+    /// Only the serverless mode joins the public DHT.
+    kad: Toggle<kad::Behaviour<kad::store::MemoryStore>>,
 }
 
-fn swarm(key: libp2p::identity::Keypair) -> Result<Swarm<Behaviour>> {
+/// `public` joins the IPFS DHT as a client, to meet a peer without a coordinator.
+fn swarm(key: libp2p::identity::Keypair, public: bool) -> Result<Swarm<Behaviour>> {
     Ok(SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
@@ -42,18 +47,99 @@ fn swarm(key: libp2p::identity::Keypair) -> Result<Swarm<Behaviour>> {
             noise::Config::new,
             yamux::Config::default,
         )?
+        .with_quic()
+        .with_dns()?
         .with_relay_client(noise::Config::new, yamux::Config::default)?
-        .with_behaviour(|key, relay| Behaviour {
-            relay,
-            identify: identify::Behaviour::new(identify::Config::new(
-                "/blockops/1".into(),
-                key.public(),
-            )),
-            dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-            streams: libp2p_stream::Behaviour::new(),
+        .with_behaviour(|key, relay| {
+            let peer = key.public().to_peer_id();
+            let kad = public.then(|| {
+                let mut kad = kad::Behaviour::with_config(
+                    peer,
+                    kad::store::MemoryStore::new(peer),
+                    kad::Config::new(kad::PROTOCOL_NAME),
+                );
+                // Never serve the DHT: a player is not a public node.
+                kad.set_mode(Some(kad::Mode::Client));
+                kad
+            });
+            Behaviour {
+                relay,
+                identify: identify::Behaviour::new(identify::Config::new(
+                    "/blockops/1".into(),
+                    key.public(),
+                )),
+                dcutr: dcutr::Behaviour::new(peer),
+                streams: libp2p_stream::Behaviour::new(),
+                kad: kad.into(),
+            }
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
         .build())
+}
+
+/// Who may use a tunnel stream: holders of one shared secret, or identity-bound grants.
+#[derive(Clone)]
+enum Gate {
+    Secret([u8; 32]),
+    Members(access::Access),
+}
+
+/// Serve one inbound tunnel stream: check its capability, then join it to the target.
+async fn serve_stream(
+    stream: libp2p::Stream,
+    remote_peer: PeerId,
+    gate: Gate,
+    target: SocketAddr,
+    expires: u64,
+) -> Result<()> {
+    let mut stream = stream.compat();
+    let mut received = [0; 32];
+    tokio::time::timeout(TIMEOUT, stream.read_exact(&mut received)).await??;
+    let (allowed, member) = match &gate {
+        Gate::Secret(secret) => (bool::from(secret.ct_eq(&received)), None),
+        Gate::Members(access) => {
+            let member = access.authorize(&received, remote_peer);
+            (member.is_some(), member)
+        }
+    };
+    if now() >= expires || !allowed {
+        stream.write_all(&[0]).await?;
+        bail!("Invitation rejected");
+    }
+    let revoked = member.unwrap_or_default();
+    let mut target = tokio::select! {
+        biased;
+        _ = revoked.cancelled() => bail!("Member access revoked"),
+        result = tokio::time::timeout(TIMEOUT, TcpStream::connect(target)) => result??,
+    };
+    stream.write_all(&[1]).await?;
+    tokio::select! {
+        _ = revoked.cancelled() => bail!("Member access revoked"),
+        result = tokio::io::copy_bidirectional(&mut stream, &mut target) => { result?; }
+    }
+    Ok(())
+}
+
+/// Carry one local game connection to the host over a new authenticated stream.
+async fn forward(
+    mut socket: TcpStream,
+    mut control: libp2p_stream::Control,
+    peer: PeerId,
+    token: [u8; 32],
+    expires: u64,
+) -> Result<()> {
+    ensure!(now() < expires, "Invitation expired");
+    let mut stream = tokio::time::timeout(TIMEOUT, control.open_stream(peer, PROTOCOL))
+        .await??
+        .compat();
+    tokio::time::timeout(TIMEOUT, async {
+        stream.write_all(&token).await?;
+        ensure!(stream.read_u8().await? == 1, "Invitation rejected");
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    tokio::io::copy_bidirectional(&mut socket, &mut stream).await?;
+    Ok(())
 }
 
 pub fn now() -> u64 {
@@ -103,6 +189,8 @@ pub struct Session {
     cancel: CancellationToken,
     task: Option<tokio::task::JoinHandle<()>>,
     access: Option<access::Access>,
+    /// Issues codes on a serverless host.
+    direct: Option<tokio::sync::mpsc::Sender<direct::Command>>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -168,7 +256,7 @@ async fn host_inner(
         ttl.as_secs() > 0 && ttl <= Duration::from_secs(86400),
         "Invitation lifetime must be 1..86400 seconds"
     );
-    let mut swarm = swarm(libp2p::identity::Keypair::generate_ed25519())?;
+    let mut swarm = swarm(libp2p::identity::Keypair::generate_ed25519(), false)?;
     let peer = *swarm.local_peer_id();
     let mut incoming = swarm.behaviour().streams.new_control().accept(PROTOCOL)?;
     let listen = match relay_address {
@@ -186,7 +274,10 @@ async fn host_inner(
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
     let (status_tx, status) = watch::channel(Status::default());
-    let host_access = access.clone();
+    let gate = match &access {
+        Some(access) => Gate::Members(access.clone()),
+        None => Gate::Secret(secret),
+    };
     let task = tokio::spawn(async move {
         let mut ready = Some(ready_tx);
         let mut tasks = JoinSet::new();
@@ -211,30 +302,7 @@ async fn host_inner(
                 },
                 Some((remote_peer, stream)) = incoming.next() => {
                     if tasks.len() >= MAX_STREAMS { drop(stream); continue; }
-                    let access = host_access.clone();
-                    tasks.spawn(async move {
-                        let mut stream = stream.compat();
-                        let mut received = [0;32];
-                        tokio::time::timeout(TIMEOUT, stream.read_exact(&mut received)).await??;
-                        let member = access.as_ref().and_then(|a| a.authorize(&received, remote_peer));
-                        let allowed = if access.is_some() { member.is_some() } else { bool::from(secret.ct_eq(&received)) };
-                        if now() >= expires || !allowed {
-                            stream.write_all(&[0]).await?;
-                            bail!("Invitation rejected");
-                        }
-                        let revoked = member.unwrap_or_default();
-                        let mut target = tokio::select! {
-                            biased;
-                            _ = revoked.cancelled() => bail!("Member access revoked"),
-                            result = tokio::time::timeout(TIMEOUT, TcpStream::connect(target)) => result??,
-                        };
-                        stream.write_all(&[1]).await?;
-                        tokio::select! {
-                            _ = revoked.cancelled() => bail!("Member access revoked"),
-                            result = tokio::io::copy_bidirectional(&mut stream, &mut target) => { result?; }
-                        }
-                        Ok::<_, anyhow::Error>(())
-                    });
+                    tasks.spawn(serve_stream(stream, remote_peer, gate.clone(), target, expires));
                     status_tx.send_modify(|s| s.active_connections = tasks.len());
                 },
                 Some(result) = tasks.join_next(), if !tasks.is_empty() => {
@@ -255,6 +323,7 @@ async fn host_inner(
         cancel,
         task: Some(task),
         access,
+        direct: None,
     };
     let address = tokio::time::timeout(TIMEOUT, ready_rx)
         .await
@@ -294,7 +363,8 @@ pub async fn join_with_listener(
         "Guest listener must bind loopback"
     );
     let (address, peer, token) = invite.validate()?;
-    let mut swarm = swarm(key)?;
+    let expires = invite.expires_at;
+    let mut swarm = swarm(key, false)?;
     swarm.add_peer_address(peer, address.clone());
     swarm.dial(address)?;
     let control = swarm.behaviour().streams.new_control();
@@ -317,19 +387,8 @@ pub async fn join_with_listener(
                     _ => {}
                 },
                 accepted = listener.accept(), if tasks.len() < MAX_STREAMS => {
-                    let Ok((mut socket, _)) = accepted else { break; };
-                    let mut control = control.clone();
-                    tasks.spawn(async move {
-                        ensure!(now() < invite.expires_at, "Invitation expired");
-                        let mut stream = tokio::time::timeout(TIMEOUT, control.open_stream(peer, PROTOCOL)).await??.compat();
-                        tokio::time::timeout(TIMEOUT, async {
-                            stream.write_all(&token).await?;
-                            ensure!(stream.read_u8().await? == 1, "Invitation rejected");
-                            Ok::<_, anyhow::Error>(())
-                        }).await??;
-                        tokio::io::copy_bidirectional(&mut socket, &mut stream).await?;
-                        Ok::<_, anyhow::Error>(())
-                    });
+                    let Ok((socket, _)) = accepted else { break; };
+                    tasks.spawn(forward(socket, control.clone(), peer, token, expires));
                     status_tx.send_modify(|s| s.active_connections = tasks.len());
                 },
                 Some(result) = tasks.join_next(), if !tasks.is_empty() => {
@@ -351,5 +410,6 @@ pub async fn join_with_listener(
         cancel,
         task: Some(task),
         access: None,
+        direct: None,
     })
 }
