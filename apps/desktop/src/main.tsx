@@ -17,7 +17,13 @@ type Session = {
 };
 
 /** What Minecraft with the BlockOps mod reports doing on this computer. */
-type LocalMinecraft = { running: number; open_worlds: number; in_menu: number };
+type LanWorld = { port: number; name: string; version: string | null };
+type LocalMinecraft = { running: number; open_worlds: number; in_menu: number; lan_worlds?: LanWorld[] };
+
+/** "«Steve - New World», Minecraft 1.20.1" from a LAN announcement, when known. */
+function describeWorld(name: string | null | undefined, version: string | null | undefined): string {
+  return [name && `«${name}»`, version && `Minecraft ${version}`].filter(Boolean).join(', ');
+}
 
 const SETTINGS_KEY = 'blockops.connection';
 const DEFAULT_COORDINATOR = 'http://127.0.0.1:8080';
@@ -157,9 +163,10 @@ function App() {
   async function detectWorld(pairingCode: string | null) {
     setHostPairingCode(''); setBusy(true); setWorldError(''); setWorldFeedback('');
     try {
-      const world = await invoke<{id:number;port:number}>('detect_open_world', { pairingCode });
+      const world = await invoke<{id:number;port:number;name?:string|null;version?:string|null}>('detect_open_world', { pairingCode });
+      const described = describeWorld(world.name, world.version);
       setWorldWatchId(world.id); setLanPort(String(world.port));
-      setWorldFeedback('Порт получен из Minecraft. BlockOps отслеживает, открыт ли мир.');
+      setWorldFeedback(`Порт получен из Minecraft${described ? `: ${described}` : ''}. BlockOps отслеживает, открыт ли мир.`);
     } catch (failure) { setWorldWatchId(null); setLanPort(''); setWorldError(String(failure)); }
     finally { setBusy(false); }
   }
@@ -210,10 +217,11 @@ function App() {
     catch { return true; }
   })();
   const needsPublicServices = !direct && (coordinatorIsLocal || (mode === 'host' && !relay.trim()));
-  const hostHint = !local || worldWatchId !== null ? 'С модом BlockOps приложение само найдёт открытый мир на этом компьютере и его порт.'
-    : local.running === 0 ? 'Запустите Minecraft с модом BlockOps и откройте мир для сети: BlockOps найдёт его сам. Мод можно установить в разделе «Найти мою сборку Minecraft».'
-    : local.open_worlds === 0 ? 'Minecraft запущен. Откройте мир для сети: BlockOps найдёт его сам.'
-    : 'Найден открытый для сети мир.';
+  const announced = local?.lan_worlds?.[0];
+  const hostHint = !local || worldWatchId !== null ? 'BlockOps сам найдёт открытый для сети мир на этом компьютере в любой версии Minecraft Java.'
+    : local.open_worlds > 0 ? `Найден открытый для сети мир${announced ? ` ${describeWorld(announced.name, announced.version)}` : ''}.`
+    : local.running > 0 ? 'Minecraft запущен. Откройте мир для сети: BlockOps найдёт его сам.'
+    : 'Откройте мир в Minecraft и нажмите «Открыть для сети»: BlockOps найдёт его сам, в любой версии.';
   const guestHint = !local ? 'С экспериментальным модом Fabric 1.21.1 откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.'
     : local.running === 0 ? 'Запустите Minecraft с модом BlockOps: в главном меню игра сама подключится к миру друга. Мод можно установить в разделе «Найти мою сборку Minecraft».'
     : local.in_menu > 1 ? 'Запущено несколько копий Minecraft с модом BlockOps. Оставьте одну или войдите по коду мода.'
@@ -280,7 +288,7 @@ function App() {
       </form>}
     </div><aside className="guide" aria-label="Как начать">
       <h2>{mode === 'host' ? 'Как начать' : 'Как присоединиться'}</h2>
-      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>С модом BlockOps мир найдётся сам; без мода укажите порт.</span></li><li><strong>Пригласите друга</strong><span>Нажмите «Пригласить друга» и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите приглашение</strong><span>Друг пришлёт его в мессенджере.</span></li><li><strong>Вставьте его целиком</strong><span>BlockOps найдёт код и подключится сам.</span></li><li><strong>Откройте Minecraft</strong><span>С модом BlockOps игра подключится сама; без мода добавьте адрес в сетевой игре.</span></li></ol>}
+      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>BlockOps найдёт мир сам, в любой версии Minecraft Java.</span></li><li><strong>Пригласите друга</strong><span>Нажмите «Пригласить друга» и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите приглашение</strong><span>Друг пришлёт его в мессенджере.</span></li><li><strong>Вставьте его целиком</strong><span>BlockOps найдёт код и подключится сам.</span></li><li><strong>Откройте Minecraft</strong><span>С модом BlockOps игра подключится сама; без мода добавьте адрес в сетевой игре.</span></li></ol>}
     </aside></div>
 
     {session && mode !== session.mode && <p className="notice">Активное соединение останется открытым. Чтобы создать новое, сначала отключите текущее.</p>}

@@ -226,6 +226,29 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     assert.deepEqual(await invited.evaluate(() => window.__joins), [{ code: 'ABCD-EFGH-JKMN', coordinator: 'http://127.0.0.1:8080' }]);
     await invited.close();
 
+    // Without the mod, in any version: the world's LAN announcement is enough.
+    const vanilla = await browser.newPage();
+    await vanilla.addInitScript(() => {
+      window.__local = { running: 0, open_worlds: 0, in_menu: 0, lan_worlds: [] };
+      window.__detections = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'local_minecraft') return window.__local;
+        if (command === 'detect_open_world') { window.__detections.push(args); return { id: 5, port: 51234, name: 'Steve - New World', version: '1.20.1' }; }
+        if (command === 'world_watch_alive') return true;
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await vanilla.goto(baseUrl);
+    await vanilla.getByText(/нажмите «Открыть для сети»: BlockOps найдёт его сам, в любой версии/).waitFor();
+    await vanilla.evaluate(() => {
+      window.__local = { running: 0, open_worlds: 1, in_menu: 0, lan_worlds: [{ port: 51234, name: 'Steve - New World', version: '1.20.1' }] };
+    });
+    await vanilla.getByText('Порт получен из Minecraft: «Steve - New World», Minecraft 1.20.1. BlockOps отслеживает, открыт ли мир.').waitFor();
+    assert.equal(await vanilla.getByLabel('Порт мира Minecraft').inputValue(), '51234');
+    assert.deepEqual(await vanilla.evaluate(() => window.__detections), [{ pairingCode: null }]);
+    await vanilla.close();
+
     // Automatic guest flow: the game joins by itself once it reaches the main menu, once.
     const guest = await browser.newPage();
     await guest.addInitScript(() => {

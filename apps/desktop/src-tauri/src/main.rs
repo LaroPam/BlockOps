@@ -15,11 +15,16 @@ struct WorldSlot {
 struct WorldDetection {
     id: u64,
     port: u16,
+    /// From the world's LAN announcement, when there is one.
+    name: Option<String>,
+    version: Option<String>,
 }
 struct AppState(
     Mutex<Option<(String, Session, Option<String>)>>,
     Mutex<Vec<Invite>>,
     Mutex<Option<WorldSlot>>,
+    /// Started on first use; `None` until the announcement port could be opened.
+    Mutex<Option<blockops_coordination::lan::LanWorlds>>,
 );
 
 /// A friend's code, issued by a coordinator or announced on the public network.
@@ -333,33 +338,69 @@ fn prefer(
     }
 }
 
+const NO_WORLD: &str = "Открытый для сети мир не найден. В Minecraft откройте мир и нажмите «Открыть для сети»: BlockOps найдёт его сам.";
+
+/// Worlds announced to LAN from this computer by any Minecraft version. The listener starts
+/// on first use and is retried while its port cannot be opened.
+async fn lan_worlds(state: &AppState) -> Option<blockops_coordination::lan::LanWorlds> {
+    let mut lan = state.3.lock().await;
+    if lan.is_none() {
+        *lan = blockops_coordination::lan::LanWorlds::listen().ok();
+    }
+    lan.clone()
+}
+
 #[derive(Serialize)]
 struct LocalMinecraft {
     running: usize,
     open_worlds: usize,
     in_menu: usize,
+    lan_worlds: Vec<blockops_coordination::lan::LanWorld>,
 }
 
-/// What Minecraft with the mod reports doing on this computer. Reads only the private
-/// descriptors and spends no bridge, so the interface can poll it.
+/// What Minecraft reports doing on this computer: the mod through its private descriptors,
+/// any version through LAN announcements. Spends no bridge, so the interface can poll it.
 #[tauri::command]
-async fn local_minecraft() -> Result<LocalMinecraft, String> {
+async fn local_minecraft(state: State<'_, AppState>) -> Result<LocalMinecraft, String> {
     use blockops_local_discovery::GameState;
     let found = companions().await;
     let count = |state| found.iter().filter(|c| c.state == state).count();
+    let lan_worlds = match lan_worlds(&state).await {
+        Some(lan) => lan.current(),
+        None => Vec::new(),
+    };
     Ok(LocalMinecraft {
         running: found.len(),
-        open_worlds: count(GameState::Lan),
+        // A world opened with the mod is announced too; count each world once.
+        open_worlds: count(GameState::Lan).max(lan_worlds.len()),
         in_menu: count(GameState::Menu),
+        lan_worlds,
     })
 }
 
-/// Ask each discovered companion for an open world; exactly one must have it.
-async fn find_open_world() -> Result<blockops_coordination::local_bridge::WorldWatch, String> {
-    let found = companions().await;
-    if found.is_empty() {
-        return Err(NO_COMPANION.into());
+/// The open world: through the mod when it is installed, which also authenticates the
+/// answer, otherwise from the LAN announcement every Minecraft version makes.
+async fn find_open_world(
+    lan: Option<blockops_coordination::lan::LanWorlds>,
+) -> Result<blockops_coordination::local_bridge::WorldWatch, String> {
+    if let Some(world) = find_world_through_mod().await? {
+        return Ok(world);
     }
+    let lan = lan.ok_or(NO_WORLD)?;
+    match lan.current().as_slice() {
+        [] => Err(NO_WORLD.into()),
+        [world] => Ok(lan.watch(world.port)),
+        _ => Err(
+            "Открыто несколько миров. Оставьте открытым для сети один и попробуйте снова.".into(),
+        ),
+    }
+}
+
+/// Ask each discovered companion for an open world. `None` when no mod has one; an error
+/// when several do, since only the player can tell which world to share.
+async fn find_world_through_mod(
+) -> Result<Option<blockops_coordination::local_bridge::WorldWatch>, String> {
+    let found = companions().await;
     let mut worlds = Vec::new();
     for companion in prefer(&found, blockops_local_discovery::GameState::Lan) {
         // Each probe uses up that bridge; the mod advertises a fresh one within a second.
@@ -370,15 +411,12 @@ async fn find_open_world() -> Result<blockops_coordination::local_bridge::WorldW
             worlds.push(watch);
         }
     }
-    let world = worlds.pop().ok_or(
-        "Minecraft с модом BlockOps запущен, но открытый для сети мир не найден. Откройте мир для сети и попробуйте снова.",
-    )?;
-    if !worlds.is_empty() {
+    if worlds.len() > 1 {
         return Err(
             "Открыты миры в нескольких копиях Minecraft. Оставьте один и попробуйте снова.".into(),
         );
     }
-    Ok(world)
+    Ok(worlds.pop())
 }
 
 /// Without a pairing code, the only discovered Minecraft is asked to join.
@@ -445,7 +483,14 @@ async fn detect_open_world(
                 "Не удалось определить порт. Откройте мир для сети и получите новый код мода."
                     .to_owned()
             })?,
-        None => find_open_world().await?,
+        None => find_open_world(lan_worlds(&state).await).await?,
+    };
+    let announced = match lan_worlds(&state).await {
+        Some(lan) => lan
+            .current()
+            .into_iter()
+            .find(|world| world.port == watch.port),
+        None => None,
     };
     let id = NEXT_WORLD.fetch_add(1, Ordering::Relaxed);
     let port = watch.port;
@@ -488,7 +533,12 @@ async fn detect_open_world(
             session.stop().await;
         }
     });
-    Ok(WorldDetection { id, port })
+    Ok(WorldDetection {
+        id,
+        port,
+        name: announced.as_ref().map(|world| world.name.clone()),
+        version: announced.and_then(|world| world.version),
+    })
 }
 
 #[tauri::command]
@@ -645,6 +695,7 @@ fn main() {
         .manage(AppState(
             Mutex::new(None),
             Mutex::new(Vec::new()),
+            Mutex::new(None),
             Mutex::new(None),
         ))
         .setup(|app| {
