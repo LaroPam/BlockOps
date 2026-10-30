@@ -67,6 +67,8 @@ check additionally starts **two CLI client processes** and a relay process.
 - The host sees who is in the world, by the name the game logs in with, and each friend's ping;
   a notice (a Windows notification when BlockOps is in the background) tells when friends come
   and go. Server list pings are not counted. Guests see their ping to the host.
+- Closing while friends play, a guest is connected or a server runs asks first and can keep
+  BlockOps running in the tray; starting it again opens the running copy.
 - A «Готовность к игре» panel shows at a glance whether Minecraft was found, whether the world is
   open (host) or the server is in Minecraft's list (guest), and the mod, with one-click fixes.
 

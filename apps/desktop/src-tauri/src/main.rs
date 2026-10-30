@@ -107,9 +107,20 @@ fn notify_players(
     tauri::async_runtime::spawn(async move {
         use tauri_plugin_notification::NotificationExt;
         let mut known = status.borrow_and_update().players.clone();
+        let tooltip = |players: usize| {
+            if let Some(tray) = app.tray_by_id(TRAY) {
+                let _ = tray.set_tooltip(Some(match players {
+                    0 => "BlockOps".into(),
+                    players => format!("BlockOps — в мире: {players}"),
+                }));
+            }
+        };
         while status.changed().await.is_ok() {
             let players = status.borrow_and_update().players.clone();
             let changes = player_changes(&known, &players);
+            if players.len() != known.len() {
+                tooltip(players.len());
+            }
             known = players;
             let focused = app
                 .get_webview_window("main")
@@ -125,6 +136,7 @@ fn notify_players(
                 .body(changes.join("\n"))
                 .show();
         }
+        tooltip(0);
     });
 }
 /// `direct` meets friends through the public network instead of a coordinator and relay.
@@ -879,10 +891,186 @@ fn open_eula(app: tauri::AppHandle) -> Result<(), String> {
         .open_url(blockops_server_manager::EULA_URL, None::<&str>)
         .map_err(|e| e.to_string())
 }
+const TRAY: &str = "main";
+static TRAY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The window goes, BlockOps stays: friends keep playing and the tray brings it back.
+fn hide_to_tray(app: &tauri::AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    if !TOLD.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let _ = app
+            .notification()
+            .builder()
+            .title("BlockOps работает в фоне")
+            .body("Соединение не прервано. Значок BlockOps рядом с часами откроет окно или завершит работу.")
+            .show();
+    }
+}
+
+/// What closing BlockOps would interrupt, in words for the question asked first.
+async fn activity(app: &tauri::AppHandle) -> Vec<String> {
+    let mut active = Vec::new();
+    match app.state::<AppState>().0.try_lock() {
+        Ok(current) => {
+            if let Some((mode, session, _)) = current.as_ref() {
+                let players = session.status.borrow().players.len();
+                active.push(match (mode.as_str(), players) {
+                    ("host", 0) => "ваш мир открыт для друзей по приглашению".into(),
+                    ("host", players) => format!("в вашем мире играют друзья: {players}"),
+                    _ => "вы подключены к миру друга".into(),
+                });
+            }
+        }
+        Err(_) => active.push("BlockOps устанавливает соединение".into()),
+    }
+    match app.state::<servers::Servers>().processes.try_lock() {
+        Ok(processes) => {
+            let running = processes
+                .values()
+                .filter(|p| !matches!(p.status.borrow().phase.as_str(), "stopped" | "failed"))
+                .count();
+            if running > 0 {
+                active.push(format!("работает ваш сервер Minecraft ({running})"));
+            }
+        }
+        Err(_) => active.push("запускается ваш сервер Minecraft".into()),
+    }
+    active
+}
+
+enum Closing {
+    Tray,
+    Quit,
+    Stay,
+}
+
+/// A native question, so it works even while the page is busy.
+async fn ask_before_closing(app: &tauri::AppHandle, active: &[String]) -> Closing {
+    use tauri_plugin_dialog::{
+        DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
+    };
+    const TRAY_LABEL: &str = "Свернуть в трей";
+    const QUIT_LABEL: &str = "Закрыть";
+    let tray = TRAY_READY.load(std::sync::atomic::Ordering::SeqCst);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .message(format!(
+            "Сейчас {}.\n\nЕсли закрыть BlockOps, это прекратится.{}",
+            active.join(", "),
+            if tray {
+                " Свёрнутый в трей BlockOps продолжит работать в фоне."
+            } else {
+                ""
+            }
+        ))
+        .title("Закрыть BlockOps?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(if tray {
+            MessageDialogButtons::YesNoCancelCustom(
+                TRAY_LABEL.into(),
+                QUIT_LABEL.into(),
+                "Отмена".into(),
+            )
+        } else {
+            MessageDialogButtons::OkCancelCustom(QUIT_LABEL.into(), "Отмена".into())
+        });
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.parent(&window);
+    }
+    dialog.show_with_result(move |result| {
+        let _ = tx.send(result);
+    });
+    match rx.await {
+        Ok(MessageDialogResult::Yes) if tray => Closing::Tray,
+        Ok(MessageDialogResult::No | MessageDialogResult::Ok) => Closing::Quit,
+        Ok(MessageDialogResult::Custom(label)) if label == TRAY_LABEL => Closing::Tray,
+        Ok(MessageDialogResult::Custom(label)) if label == QUIT_LABEL => Closing::Quit,
+        _ => Closing::Stay,
+    }
+}
+
+/// Stop connections and servers, saving worlds, then exit. Runs once.
+async fn quit(app: tauri::AppHandle) {
+    let state = app.state::<servers::Servers>();
+    if state
+        .closing
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    let _ = stop(app.state::<AppState>()).await;
+    let state = app.state::<servers::Servers>();
+    let _install = state.installing.lock().await;
+    // A copy/restore may still be executing after its IPC request was dropped.
+    let _disk_operation = state.disk_operations.lock().await;
+    let _process_stop = state.process_stops.lock().await;
+    let all = std::mem::take(&mut *state.processes.lock().await);
+    let mut stops = tokio::task::JoinSet::new();
+    for (_, process) in all {
+        stops.spawn(process.stop());
+    }
+    while stops.join_next().await.is_some() {}
+    app.exit(0);
+}
+
+/// The tray icon: a click opens the window, the menu also quits.
+fn tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::{
+        menu::{Menu, MenuItem},
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    };
+    let open = MenuItem::with_id(app, "open", "Открыть BlockOps", true, None::<&str>)?;
+    let exit = MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
+    let mut builder = TrayIconBuilder::with_id(TRAY)
+        .tooltip("BlockOps")
+        .menu(&Menu::with_items(app, &[&open, &exit])?)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_window(app),
+            "quit" => {
+                tauri::async_runtime::spawn(quit(app.clone()));
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
+        // Starting BlockOps again, e.g. while it sits in the tray, opens the running one.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_window(app)
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState(
             Mutex::new(None),
             Mutex::new(Vec::new()),
@@ -900,33 +1088,35 @@ fn main() {
                 process_stops: std::sync::Arc::new(Mutex::new(())),
                 closing: std::sync::atomic::AtomicBool::new(false),
             });
+            // Without a tray (some Linux desktops) the window still works; closing then quits.
+            let tray_ready = tray(app).is_ok();
+            TRAY_READY.store(tray_ready, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         })
+        // Closing with friends in the world or a server running asks first; the answer can
+        // keep BlockOps running in the tray.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                static ASKING: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
                 let app = window.app_handle().clone();
-                let state = app.state::<servers::Servers>();
-                if state
-                    .closing
-                    .swap(true, std::sync::atomic::Ordering::SeqCst)
-                {
-                    return;
-                }
                 tauri::async_runtime::spawn(async move {
-                    let _ = stop(app.state::<AppState>()).await;
-                    let state = app.state::<servers::Servers>();
-                    let _install = state.installing.lock().await;
-                    // A copy/restore may still be executing after its IPC request was dropped.
-                    let _disk_operation = state.disk_operations.lock().await;
-                    let _process_stop = state.process_stops.lock().await;
-                    let all = std::mem::take(&mut *state.processes.lock().await);
-                    let mut stops = tokio::task::JoinSet::new();
-                    for (_, process) in all {
-                        stops.spawn(process.stop());
+                    if ASKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return;
                     }
-                    while stops.join_next().await.is_some() {}
-                    app.exit(0);
+                    let active = activity(&app).await;
+                    let choice = if active.is_empty() {
+                        Closing::Quit
+                    } else {
+                        ask_before_closing(&app, &active).await
+                    };
+                    ASKING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    match choice {
+                        Closing::Tray => hide_to_tray(&app),
+                        Closing::Quit => quit(app).await,
+                        Closing::Stay => {}
+                    }
                 });
             }
         })
