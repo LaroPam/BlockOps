@@ -50,6 +50,7 @@ jobs:
         if: runner.os == 'Linux'
         run: python scripts/https_pilot_smoke.py
   desktop-windows:
+    needs: [fabric-client, mod-targets]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,17 +61,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-java@v4
+      # The installer ships one mod jar per loader and version, built by the mod jobs.
+      - name: Bundle the mods with the desktop application
+        uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@v4
-      # The installer ships the mod so the application can install it on request.
-      - name: Build the bundled Fabric mod
-        working-directory: mods/fabric-1.21.1
-        run: .\gradlew.bat --no-daemon assemble
-      - name: Bundle the mod with the desktop application
-        run: Copy-Item mods/fabric-1.21.1/build/libs/blockops-fabric-client-*.jar apps/desktop/src-tauri/resources/mod/
+          pattern: blockops-mod-*
+          merge-multiple: true
+          path: apps/desktop/src-tauri/resources/mod
       - run: npm ci
       - run: npm run build
       - run: npx playwright install chromium
@@ -100,7 +97,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: mods/fabric-1.21.1
+        working-directory: mods
     env:
       # Windows runs the mod's private descriptor writer against the desktop's reader.
       BLOCKOPS_BRIDGE_TEST_CLIENT: ${{ github.workspace }}${{ matrix.os == 'windows-latest' && '\target\debug\examples\local_bridge_smoke.exe' || '/target/debug/examples/local_bridge_smoke' }}
@@ -123,7 +120,7 @@ jobs:
       - name: Build client mod
         if: runner.os != 'Windows'
         run: |
-          if ! ./gradlew --no-daemon build > /tmp/blockops-fabric-build.log 2>&1; then
+          if ! ./gradlew --no-daemon -p fabric-1.21.1 build > /tmp/blockops-fabric-build.log 2>&1; then
             tail -80 /tmp/blockops-fabric-build.log
             detail=$(tail -40 /tmp/blockops-fabric-build.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
             echo "::error title=Fabric build::$detail"
@@ -135,7 +132,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          .\gradlew.bat --no-daemon build 2>&1 | Tee-Object -Variable buildOutput | Out-Host
+          .\gradlew.bat --no-daemon -p fabric-1.21.1 build 2>&1 | Tee-Object -Variable buildOutput | Out-Host
           $result = $LASTEXITCODE
           if ($result -ne 0) {
             $detail = (($buildOutput | Select-Object -Last 80) -join "`n").Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
@@ -149,8 +146,9 @@ jobs:
       - name: Check packaged mod contents
         if: runner.os != 'Windows'
         run: |
-          jar tf build/libs/blockops-fabric-client-0.1.0.jar > /tmp/blockops-mod-files.txt
+          jar tf fabric-1.21.1/build/libs/blockops-fabric-1.21.1-0.1.0.jar > /tmp/blockops-mod-files.txt
           grep -Fx 'fabric.mod.json' /tmp/blockops-mod-files.txt
+          grep -Fx 'blockops.json' /tmp/blockops-mod-files.txt
           grep -Fx 'org/blockops/fabric/BlockOpsClient.class' /tmp/blockops-mod-files.txt
           grep -Fx 'org/blockops/fabric/PairingScreen.class' /tmp/blockops-mod-files.txt
           grep -Fx 'org/blockops/bridge/DiscoveryPublisher.class' /tmp/blockops-mod-files.txt
@@ -159,6 +157,48 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: runner.os != 'Windows'
         with:
-          name: blockops-fabric-1.21.1-experimental
-          path: mods/fabric-1.21.1/build/libs/blockops-fabric-client-0.1.0.jar
+          name: blockops-mod-fabric-1.21.1
+          path: mods/fabric-1.21.1/build/libs/blockops-fabric-1.21.1-0.1.0.jar
+          if-no-files-found: error
+  # The mod for other loaders and versions: the same shared core, a thin layer each.
+  mod-targets:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fabric-1.20.1, neoforge-1.21.1, forge-1.20.1]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mods
+    steps:
+      - uses: actions/checkout@v4
+      # Forge 1.20.1's toolchain must be JDK 17; Gradle itself runs on 21.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build ${{ matrix.target }}
+        run: |
+          if ! ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64 -p ${{ matrix.target }} build > /tmp/blockops-mod-build.log 2>&1; then
+            tail -80 /tmp/blockops-mod-build.log
+            detail=$(tail -40 /tmp/blockops-mod-build.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=${{ matrix.target }} build::$detail"
+            exit 1
+          fi
+          tail -20 /tmp/blockops-mod-build.log
+      - name: Check the jar names its target and carries the shared core
+        run: |
+          file=${{ matrix.target }}/build/libs/blockops-${{ matrix.target }}-0.1.0.jar
+          jar tf "$file" > /tmp/blockops-mod-files.txt
+          grep -Fx 'blockops.json' /tmp/blockops-mod-files.txt
+          grep -Fx 'org/blockops/bridge/DiscoveryPublisher.class' /tmp/blockops-mod-files.txt
+          target=${{ matrix.target }}
+          unzip -p "$file" blockops.json | grep -F "\"loader\":\"${target%%-*}\",\"minecraft\":\"${target#*-}\""
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blockops-mod-${{ matrix.target }}
+          path: mods/${{ matrix.target }}/build/libs/blockops-${{ matrix.target }}-0.1.0.jar
           if-no-files-found: error

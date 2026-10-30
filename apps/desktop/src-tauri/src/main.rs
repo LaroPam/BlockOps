@@ -654,39 +654,73 @@ async fn discover_minecraft_profiles(
         "Не удалось прочитать профили Minecraft Launcher. Проверьте выбранную папку.".to_owned()
     })
 }
-/// The mod jar the installer placed beside the application, if this build carries one.
-fn bundled_mod(
-    app: &tauri::AppHandle,
-) -> Option<blockops_server_manager::blockops_mod::BundledMod> {
-    let directory = app.path().resource_dir().ok()?.join("mod");
-    let jar = std::fs::read_dir(directory)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|extension| extension == "jar"))?;
-    blockops_server_manager::blockops_mod::BundledMod::load(&jar).ok()
+/// The mod jars the installer placed beside the application, one per loader and version.
+fn mod_catalog(app: &tauri::AppHandle) -> blockops_server_manager::blockops_mod::Catalog {
+    match app.path().resource_dir() {
+        Ok(directory) => {
+            blockops_server_manager::blockops_mod::Catalog::load(&directory.join("mod"))
+        }
+        Err(_) => Default::default(),
+    }
 }
 
-fn explain_mod_error(error: blockops_server_manager::blockops_mod::InstallError) -> String {
+/// "Fabric 1.21.1, Forge 1.20.1" for messages.
+fn describe_targets(targets: &[blockops_server_manager::blockops_mod::Target]) -> String {
+    targets
+        .iter()
+        .map(|target| {
+            let loader = match target.loader.as_str() {
+                "fabric" => "Fabric",
+                "forge" => "Forge",
+                "neoforge" => "NeoForge",
+                other => other,
+            };
+            format!("{loader} {}", target.minecraft)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn explain_mod_error(
+    error: blockops_server_manager::blockops_mod::InstallError,
+    targets: &[blockops_server_manager::blockops_mod::Target],
+) -> String {
     use blockops_server_manager::blockops_mod::InstallError;
     match error {
-        InstallError::NotFabric => "Эта папка не принадлежит сборке Fabric 1.21.1 из Minecraft Launcher. Мод BlockOps работает только с Fabric 1.21.1.".into(),
-        InstallError::SharedWith(name) => format!("Из этой папки также запускается профиль «{name}», и мод BlockOps может помешать ему. Укажите для сборки Fabric 1.21.1 отдельную папку игры в настройках профиля Minecraft Launcher."),
+        InstallError::Unsupported if targets.is_empty() => "В этой сборке BlockOps нет мода. Установите BlockOps из сборки, в которую он входит.".into(),
+        InstallError::Unsupported => format!("Эта папка не принадлежит сборке из Minecraft Launcher, для которой есть мод BlockOps. Мод есть для: {}.", describe_targets(targets)),
+        InstallError::SharedWith(name) => format!("Из этой папки также запускается профиль «{name}», и мод BlockOps может помешать ему. Укажите для этой сборки отдельную папку игры в настройках профиля Minecraft Launcher."),
         InstallError::InUse => "Файл мода занят. Закройте Minecraft и повторите.".into(),
         InstallError::NameTaken(name) => format!("В папке mods уже есть файл {name}, но это не мод BlockOps. Переименуйте или удалите его и повторите."),
         InstallError::Other(_) => "Не удалось изменить папку модов. Проверьте папку сборки и права доступа.".into(),
     }
 }
 
+/// The loaders and versions this build carries a mod for.
+#[tauri::command]
+async fn blockops_mod_targets(
+    app: tauri::AppHandle,
+) -> Result<Vec<blockops_server_manager::blockops_mod::Target>, String> {
+    tokio::task::spawn_blocking(move || mod_catalog(&app).targets())
+        .await
+        .map_err(|_| "Не удалось прочитать моды BlockOps".to_owned())
+}
+
+/// `loader` and `minecraft` name the build as the profile list shows it; they only choose
+/// which bundled version to compare with.
 #[tauri::command]
 async fn blockops_mod_status(
     app: tauri::AppHandle,
     game_dir: String,
+    loader: String,
+    minecraft: String,
 ) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
     tokio::task::spawn_blocking(move || {
+        let catalog = mod_catalog(&app);
+        let target = blockops_server_manager::blockops_mod::Target { loader, minecraft };
         blockops_server_manager::blockops_mod::status(
             std::path::Path::new(&game_dir),
-            bundled_mod(&app).as_ref(),
+            catalog.get(&target),
         )
     })
     .await
@@ -702,35 +736,37 @@ async fn install_blockops_mod(
     game_dir: String,
 ) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
     let root = launcher_root(folder)?;
-    let bundled = bundled_mod(&app).ok_or(
-        "В этой сборке BlockOps нет мода. Установите BlockOps из сборки, в которую он входит.",
-    )?;
     tokio::task::spawn_blocking(move || {
+        let catalog = mod_catalog(&app);
         blockops_server_manager::blockops_mod::install(
             &root,
             std::path::Path::new(&game_dir),
-            &bundled,
+            &catalog,
         )
+        .map_err(|error| explain_mod_error(error, &catalog.targets()))
     })
     .await
     .map_err(|_| "Не удалось установить мод BlockOps".to_owned())?
-    .map_err(explain_mod_error)
 }
 
 #[tauri::command]
 async fn remove_blockops_mod(
     app: tauri::AppHandle,
     game_dir: String,
+    loader: String,
+    minecraft: String,
 ) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
     tokio::task::spawn_blocking(move || {
+        let catalog = mod_catalog(&app);
+        let target = blockops_server_manager::blockops_mod::Target { loader, minecraft };
         blockops_server_manager::blockops_mod::remove(
             std::path::Path::new(&game_dir),
-            bundled_mod(&app).as_ref(),
+            catalog.get(&target),
         )
+        .map_err(|error| explain_mod_error(error, &catalog.targets()))
     })
     .await
     .map_err(|_| "Не удалось удалить мод BlockOps".to_owned())?
-    .map_err(explain_mod_error)
 }
 
 #[tauri::command]
@@ -829,6 +865,7 @@ fn main() {
             discover_minecraft_profiles,
             add_server_entry,
             blockops_mod_status,
+            blockops_mod_targets,
             install_blockops_mod,
             remove_blockops_mod,
             get_minecraft_selection,

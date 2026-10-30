@@ -4,6 +4,13 @@ plugins {
 
 version = project.mod_version
 group = 'org.blockops'
+base { archivesName = "blockops-fabric-${project.minecraft_version}" }
+
+// The bridge, publisher and private descriptor are shared by every loader and version.
+sourceSets {
+    main.java.srcDir '../common/src/main/java'
+    test.java.srcDir '../common/src/test/java'
+}
 
 loom {
     splitEnvironmentSourceSets()
@@ -29,7 +36,10 @@ dependencies {
 
 processResources {
     inputs.property 'version', project.version
-    filesMatching('fabric.mod.json') { expand version: project.version }
+    inputs.property 'minecraft', project.minecraft_version
+    filesMatching(['fabric.mod.json', 'blockops.json']) {
+        expand version: project.version, loader: 'fabric', minecraft: project.minecraft_version
+    }
 }
 
 tasks.withType(JavaCompile).configureEach { options.release = 21 }

@@ -336,7 +336,8 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
             { name: 'Старая сборка', game_dir: 'C:\\Games\\Old', version_id: 'old', minecraft_version: '1.20.4', loader: 'fabric', metadata_complete: true },
           ];
         }
-        if (command === 'blockops_mod_status') return window.__mod;
+        if (command === 'blockops_mod_targets') return [{ loader: 'fabric', minecraft: '1.21.1' }, { loader: 'fabric', minecraft: '1.20.1' }, { loader: 'forge', minecraft: '1.20.1' }, { loader: 'neoforge', minecraft: '1.21.1' }];
+        if (command === 'blockops_mod_status') { window.__statusArgs = args; return window.__mod; }
         if (command === 'install_blockops_mod' || command === 'remove_blockops_mod') {
           window.__modCalls.push([command, args]);
           window.__mod = command === 'install_blockops_mod'
@@ -357,7 +358,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await profiles.getByText('Моя сборка', { exact: true }).waitFor();
     assert.match(await profiles.locator('.profile-list').innerText(), /Загрузчик: Fabric/);
     // The mod is offered only for Fabric 1.21.1, and installed only after confirmation.
-    await profiles.getByText('Мод BlockOps пока поддерживает только Fabric 1.21.1.').waitFor();
+    await profiles.getByText(/Мод BlockOps есть для: Fabric 1.21.1, Fabric 1.20.1, Forge 1.20.1, NeoForge 1.21.1/).waitFor();
     await profiles.getByText(/Установлена другая версия мода BlockOps: 0.0.9/).waitFor();
     await profiles.getByRole('button', { name: 'Обновить мод BlockOps' }).click();
     await profiles.getByText(/добавит мод BlockOps 0.1.0 вместо старой версии в папку mods/).waitFor();
@@ -370,7 +371,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await profiles.getByText('Мод BlockOps не установлен.').waitFor();
     assert.deepEqual(await profiles.evaluate(() => window.__modCalls), [
       ['install_blockops_mod', { folder: 'C:\\MyLauncher', gameDir: 'C:\\Games\\Minecraft' }],
-      ['remove_blockops_mod', { gameDir: 'C:\\Games\\Minecraft' }],
+      ['remove_blockops_mod', { gameDir: 'C:\\Games\\Minecraft', loader: 'fabric', minecraft: '1.21.1' }],
     ]);
     const [scanArgs] = await profiles.evaluate(() => window.__calls);
     assert.equal(scanArgs.folder, 'C:\\MyLauncher');
