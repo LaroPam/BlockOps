@@ -37,10 +37,12 @@ __pycache__/
 # Tauri generated platform schemas
 /apps/desktop/src-tauri/gen/
 
-# Fabric client mod build outputs
-mods/fabric-1.21.1/.gradle/
-mods/fabric-1.21.1/build/
-mods/fabric-1.21.1/run/
+# Mod build outputs, for every loader and version
+mods/.gradle/
+mods/*/.gradle/
+mods/*/build/
+mods/*/run/
+mods/*/runs/
 
 # Mod jar bundled by CI into the desktop installer
 /apps/desktop/src-tauri/resources/mod/*.jar

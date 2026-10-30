@@ -13,6 +13,7 @@ clap.workspace = true
 axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 rand = "0.8"
+socket2 = "0.6"
 sha2 = "0.10"
 hex = "0.4"
 hmac = "0.12"

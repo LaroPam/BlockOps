@@ -1,4 +1,5 @@
 pub mod client;
+pub mod lan;
 pub mod local_bridge;
 pub mod service;
 use blockops_tunnel::Invite;

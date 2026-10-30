@@ -1,6 +1,6 @@
 use anyhow::{bail, ensure, Context, Result};
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha1::Digest;
 use std::{
     io::{Read, Write},
@@ -10,10 +10,60 @@ use std::{
 
 const MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 pub const VERSION: &str = "1.21.1";
-/// Explicitly supported release versions whose server metadata requires Java 21.
-pub const SUPPORTED_VERSIONS: &[&str] = &["1.21.1", "1.21.4"];
+
+/// A release BlockOps can host, and what its server needs to run safely.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Release {
+    pub id: &'static str,
+    /// The Java major version Mojang's metadata declares for the release.
+    pub java: u32,
+    /// `enforce-secure-profile` exists (1.19 and later).
+    pub secure_profile: bool,
+    /// Difficulty and game mode are numbers in server.properties (before 1.14).
+    pub numeric_modes: bool,
+    /// The bundled Log4j predates the Log4Shell fixes (before 1.17), so the server runs
+    /// with a logging configuration that never expands lookups in messages.
+    pub legacy_logging: bool,
+}
+const fn release(id: &'static str, java: u32) -> Release {
+    Release {
+        id,
+        java,
+        secure_profile: true,
+        numeric_modes: false,
+        legacy_logging: false,
+    }
+}
+/// The popular releases offered, newest first. Each is checked against Mojang's metadata.
+pub const RELEASES: &[Release] = &[
+    release("26.3", 25),
+    release("1.21.11", 21),
+    release("1.21.4", 21),
+    release("1.21.1", 21),
+    release("1.20.4", 17),
+    release("1.20.1", 17),
+    release("1.19.2", 17),
+    Release {
+        secure_profile: false,
+        ..release("1.18.2", 17)
+    },
+    Release {
+        secure_profile: false,
+        legacy_logging: true,
+        ..release("1.16.5", 8)
+    },
+    Release {
+        secure_profile: false,
+        numeric_modes: true,
+        legacy_logging: true,
+        ..release("1.12.2", 8)
+    },
+];
+pub fn find_release(version: &str) -> Option<&'static Release> {
+    RELEASES.iter().find(|release| release.id == version)
+}
 pub fn supported_version(version: &str) -> bool {
-    SUPPORTED_VERSIONS.contains(&version)
+    find_release(version).is_some()
 }
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
 
@@ -126,10 +176,7 @@ pub fn verify(data: &[u8], hash: &str, sha256: bool) -> Result<()> {
     Ok(())
 }
 pub async fn vanilla_version(requested: &str) -> Result<Artifact> {
-    ensure!(
-        supported_version(requested),
-        "Unsupported Minecraft version"
-    );
+    let release = find_release(requested).context("Unsupported Minecraft version")?;
     let manifest: Manifest = serde_json::from_slice(&bytes(MANIFEST, 8 * 1024 * 1024).await?)?;
     let version = manifest
         .versions
@@ -140,7 +187,7 @@ pub async fn vanilla_version(requested: &str) -> Result<Artifact> {
     verify(&data, &version.sha1, false)?;
     let metadata: Metadata = serde_json::from_slice(&data)?;
     ensure!(
-        metadata.id == requested && metadata.java.major == 21,
+        metadata.id == requested && metadata.java.major == release.java,
         "Unexpected Minecraft/Java compatibility metadata"
     );
     Ok(metadata.downloads.server)
@@ -172,15 +219,24 @@ struct Package {
     size: u64,
 }
 
-pub async fn java21(root: &Path) -> Result<PathBuf> {
-    let dest = root.join("java21");
-    let executable = dest.join(if cfg!(windows) {
+/// Where the runtime for one Java major version lives under `root`.
+pub fn java_executable(root: &Path, major: u32) -> PathBuf {
+    root.join(format!("java{major}")).join(if cfg!(windows) {
         "bin/java.exe"
     } else {
         "bin/java"
-    });
+    })
+}
+/// Install the official Eclipse Temurin runtime for a Java major version once.
+pub async fn java(root: &Path, major: u32) -> Result<PathBuf> {
+    ensure!(
+        RELEASES.iter().any(|release| release.java == major),
+        "Unsupported Java version"
+    );
+    let dest = root.join(format!("java{major}"));
+    let executable = java_executable(root, major);
     if executable.exists() {
-        check_java(&executable).await?;
+        check_java(&executable, major).await?;
         return Ok(executable);
     }
     ensure!(
@@ -194,7 +250,7 @@ pub async fn java21(root: &Path) -> Result<PathBuf> {
     } else {
         bail!("Automatic Java installation currently supports Windows/Linux only")
     };
-    let url = format!("https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jre&os={os}&vendor=eclipse");
+    let url = format!("https://api.adoptium.net/v3/assets/latest/{major}/hotspot?architecture=x64&image_type=jre&os={os}&vendor=eclipse");
     let assets: Vec<Runtime> = serde_json::from_slice(&bytes(&url, 2 * 1024 * 1024).await?)?;
     let package = &assets
         .first()
@@ -225,11 +281,23 @@ pub async fn java21(root: &Path) -> Result<PathBuf> {
     } else {
         "bin/java"
     });
-    check_java(&candidate).await?;
+    check_java(&candidate, major).await?;
     tokio::fs::rename(dirs[0].path(), &dest).await?;
     Ok(executable)
 }
-pub async fn check_java(java: &Path) -> Result<()> {
+/// The major version in `java -version` output: "1.8.0_462" is 8, "21.0.5" and "25" are themselves.
+pub fn java_major(output: &str) -> Option<u32> {
+    let start = output.find("version \"")? + "version \"".len();
+    let version = &output[start..start + output[start..].find('"')?];
+    let mut parts = version.split(['.', '_', '-', '+']);
+    let first: u32 = parts.next()?.parse().ok()?;
+    if first == 1 {
+        parts.next()?.parse().ok()
+    } else {
+        Some(first)
+    }
+}
+pub async fn check_java(java: &Path, major: u32) -> Result<()> {
     let mut command = tokio::process::Command::new(java);
     for name in [
         "JAVA_TOOL_OPTIONS",
@@ -250,8 +318,8 @@ pub async fn check_java(java: &Path) -> Result<()> {
         String::from_utf8_lossy(&output.stdout)
     );
     ensure!(
-        output.status.success() && text.contains("version \"21."),
-        "Java 21 is required"
+        output.status.success() && java_major(&text) == Some(major),
+        "Java {major} is required"
     );
     Ok(())
 }

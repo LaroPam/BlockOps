@@ -19,3 +19,7 @@ subtle = "2"
 spake2 = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

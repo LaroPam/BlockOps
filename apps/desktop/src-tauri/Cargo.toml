@@ -5,12 +5,15 @@ edition = "2021"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 blockops-tunnel = { path = "../../../crates/tunnel" }
 tokio = { version = "1", features = ["sync", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 blockops-server-manager = { path = "../../../crates/server-manager" }
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
 blockops-coordination = { path = "../../../crates/coordination" }
 blockops-local-discovery = { path = "../../../crates/local-discovery" }

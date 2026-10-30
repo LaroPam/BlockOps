@@ -1,0 +1,48 @@
+plugins {
+    id 'fabric-loom' version '1.7.4'
+}
+
+version = project.mod_version
+group = 'org.blockops'
+base { archivesName = "blockops-fabric-${project.minecraft_version}" }
+
+// The bridge, publisher and private descriptor are shared by every loader and version.
+sourceSets {
+    main.java.srcDir '../common/src/main/java'
+}
+
+loom {
+    splitEnvironmentSourceSets()
+    mods {
+        blockops {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.client
+        }
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    // Nest only the Fabric API modules the mod uses (Apache-2.0), so players need nothing
+    // beyond Fabric Loader. A separately installed, newer Fabric API takes precedence.
+    ['fabric-api-base', 'fabric-command-api-v2', 'fabric-lifecycle-events-v1'].each {
+        include fabricApi.module(it, project.fabric_version)
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'minecraft', project.minecraft_version
+    filesMatching(['fabric.mod.json', 'blockops.json']) {
+        expand version: project.version, loader: 'fabric', minecraft: project.minecraft_version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach { options.release = 17 }
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}

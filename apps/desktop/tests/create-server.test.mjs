@@ -25,7 +25,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       await delay(100);
     }
     browser = await chromium.launch({ executablePath: process.env.BLOCKOPS_CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
-    for (const choice of [{ mode: 'survival', pvp: true }, { mode: 'creative', pvp: false }]) {
+    for (const choice of [{ mode: 'survival', pvp: true }, { mode: 'creative', pvp: false, version: '1.12.2', java: 8 }]) {
       const page = await browser.newPage();
       await page.addInitScript(() => {
         window.__calls = [];
@@ -41,6 +41,10 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       const form = page.locator('form.create-card');
       const submit = form.getByRole('button', { name: 'Создать сервер', exact: true });
       assert.equal(await submit.isDisabled(), true);
+      if (choice.version) {
+        await form.locator('#server-version').selectOption(choice.version);
+        await form.getByText(`Java ${choice.java} BlockOps скачает`).waitFor();
+      }
       await form.locator('summary').click();
       await form.locator('#game-mode').selectOption(choice.mode);
       if (!choice.pvp) await form.getByRole('checkbox', { name: /PvP/ }).uncheck();
@@ -51,7 +55,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       assert.equal(request.settings.game_mode, choice.mode);
       assert.equal(request.settings.pvp, choice.pvp);
       assert.equal(request.acceptEula, true);
-      assert.equal(request.version, '1.21.1');
+      assert.equal(request.version, choice.version ?? '1.21.1');
       await page.close();
     }
     // The main host flow must use only the Minecraft port and bind the tunnel
@@ -226,6 +230,29 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     assert.deepEqual(await invited.evaluate(() => window.__joins), [{ code: 'ABCD-EFGH-JKMN', coordinator: 'http://127.0.0.1:8080' }]);
     await invited.close();
 
+    // Without the mod, in any version: the world's LAN announcement is enough.
+    const vanilla = await browser.newPage();
+    await vanilla.addInitScript(() => {
+      window.__local = { running: 0, open_worlds: 0, in_menu: 0, lan_worlds: [] };
+      window.__detections = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'local_minecraft') return window.__local;
+        if (command === 'detect_open_world') { window.__detections.push(args); return { id: 5, port: 51234, name: 'Steve - New World', version: '1.20.1' }; }
+        if (command === 'world_watch_alive') return true;
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await vanilla.goto(baseUrl);
+    await vanilla.getByText(/нажмите «Открыть для сети»: BlockOps найдёт его сам, в любой версии/).waitFor();
+    await vanilla.evaluate(() => {
+      window.__local = { running: 0, open_worlds: 1, in_menu: 0, lan_worlds: [{ port: 51234, name: 'Steve - New World', version: '1.20.1' }] };
+    });
+    await vanilla.getByText('Порт получен из Minecraft: «Steve - New World», Minecraft 1.20.1. BlockOps отслеживает, открыт ли мир.').waitFor();
+    assert.equal(await vanilla.getByLabel('Порт мира Minecraft').inputValue(), '51234');
+    assert.deepEqual(await vanilla.evaluate(() => window.__detections), [{ pairingCode: null }]);
+    await vanilla.close();
+
     // Automatic guest flow: the game joins by itself once it reaches the main menu, once.
     const guest = await browser.newPage();
     await guest.addInitScript(() => {
@@ -236,11 +263,18 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
         if (command === 'local_minecraft') return window.__local;
         if (command === 'status') return window.__session;
         if (command === 'join_in_minecraft') { window.__joins.push(args); return null; }
+        if (command === 'add_server_entry') return { address: '127.0.0.1:25595', added: 2, present: 0, failed: 1 };
         if (command === 'servers') return [];
         return null;
       }};
     });
     await guest.goto(baseUrl);
+    // Any version: the fixed address is saved as a server in Minecraft with one click.
+    await guest.getByText('127.0.0.1:34567').waitFor();
+    await guest.getByText(/Постоянный адрес 127.0.0.1:25595 занят другой программой/).waitFor();
+    await guest.getByRole('button', { name: 'Добавить сервер в Minecraft' }).click();
+    await guest.getByText(/появился сервер «BlockOps — мир друга»/).waitFor();
+    await guest.getByText(/В 1 папке список серверов прочитать не удалось/).waitFor();
     await guest.getByText(/Откройте главное меню Minecraft: игра сама подключится/).waitFor();
     assert.equal(await guest.evaluate(() => window.__joins.length), 0, 'joined before Minecraft was ready');
     await guest.evaluate(() => { window.__local = { running: 1, open_worlds: 0, in_menu: 1 }; });
@@ -250,6 +284,8 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     assert.equal(await guest.evaluate(() => window.__joins.length), 0, 'joined before the route was ready');
     await guest.evaluate(() => { window.__session = { ...window.__session, transport: 'direct' }; });
     await guest.getByText('Соединение с другом установлено напрямую.').waitFor();
+    await guest.evaluate(() => { window.__session = { ...window.__session, rtt_ms: 120 }; });
+    await guest.getByText(/Пинг: 120 мс, терпимо\./).waitFor();
     await guest.getByText(/Minecraft начал попытку подключения/).waitFor();
     await delay(3500); // Several more polls must not repeat the request.
     assert.deepEqual(await guest.evaluate(() => window.__joins), [{ pairingCode: null }]);
@@ -300,13 +336,15 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       window.__mod = { bundled: '0.1.0', installed: ['0.0.9'], current: false };
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         if (command === 'discover_minecraft_profiles') {
-          window.__calls.push(args);
+          // The readiness panel scans the standard folder by itself; record the manual search.
+          if (args.folder !== null) window.__calls.push(args);
           return [
             { name: 'Моя сборка', game_dir: 'C:\\Games\\Minecraft', version_id: 'custom', minecraft_version: '1.21.1', loader: 'fabric', metadata_complete: true },
             { name: 'Старая сборка', game_dir: 'C:\\Games\\Old', version_id: 'old', minecraft_version: '1.20.4', loader: 'fabric', metadata_complete: true },
           ];
         }
-        if (command === 'blockops_mod_status') return window.__mod;
+        if (command === 'blockops_mod_targets') return [{ loader: 'fabric', minecraft: '1.21.1' }, { loader: 'fabric', minecraft: '1.20.1' }, { loader: 'forge', minecraft: '1.20.1' }, { loader: 'neoforge', minecraft: '1.21.1' }];
+        if (command === 'blockops_mod_status') { window.__statusArgs = args; return window.__mod; }
         if (command === 'install_blockops_mod' || command === 'remove_blockops_mod') {
           window.__modCalls.push([command, args]);
           window.__mod = command === 'install_blockops_mod'
@@ -327,7 +365,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await profiles.getByText('Моя сборка', { exact: true }).waitFor();
     assert.match(await profiles.locator('.profile-list').innerText(), /Загрузчик: Fabric/);
     // The mod is offered only for Fabric 1.21.1, and installed only after confirmation.
-    await profiles.getByText('Мод BlockOps пока поддерживает только Fabric 1.21.1.').waitFor();
+    await profiles.getByText(/Мод BlockOps есть для: Fabric 1.21.1, Fabric 1.20.1, Forge 1.20.1, NeoForge 1.21.1/).waitFor();
     await profiles.getByText(/Установлена другая версия мода BlockOps: 0.0.9/).waitFor();
     await profiles.getByRole('button', { name: 'Обновить мод BlockOps' }).click();
     await profiles.getByText(/добавит мод BlockOps 0.1.0 вместо старой версии в папку mods/).waitFor();
@@ -340,7 +378,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await profiles.getByText('Мод BlockOps не установлен.').waitFor();
     assert.deepEqual(await profiles.evaluate(() => window.__modCalls), [
       ['install_blockops_mod', { folder: 'C:\\MyLauncher', gameDir: 'C:\\Games\\Minecraft' }],
-      ['remove_blockops_mod', { gameDir: 'C:\\Games\\Minecraft' }],
+      ['remove_blockops_mod', { gameDir: 'C:\\Games\\Minecraft', loader: 'fabric', minecraft: '1.21.1' }],
     ]);
     const [scanArgs] = await profiles.evaluate(() => window.__calls);
     assert.equal(scanArgs.folder, 'C:\\MyLauncher');
@@ -353,6 +391,156 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     const [, savedArgs] = await profiles.evaluate(() => window.__calls);
     assert.deepEqual(savedArgs.selection, { game_dir: 'C:\\Games\\Minecraft', loader: 'unknown' });
     await profiles.close();
+
+    // Readiness at a glance: Minecraft, the world or the server entry, and the optional mod.
+    const ready = await browser.newPage();
+    await ready.addInitScript(() => {
+      window.__local = { running: 0, open_worlds: 0, in_menu: 0, lan_worlds: [] };
+      window.__entry = false;
+      window.__readyCalls = [];
+      window.__mod = { bundled: '0.1.0', installed: [], current: false };
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'local_minecraft') return window.__local;
+        if (command === 'discover_minecraft_profiles') return [
+          { name: 'Fabric', game_dir: 'C:\\Games\\Fabric', version_id: 'fabric-loader-1.21.1', minecraft_version: '1.21.1', loader: 'fabric', metadata_complete: true },
+          { name: 'Последняя версия', game_dir: 'C:\\Minecraft', version_id: '1.20.1', minecraft_version: '1.20.1', loader: 'vanilla', metadata_complete: true },
+        ];
+        if (command === 'blockops_mod_targets') return [{ loader: 'fabric', minecraft: '1.21.1' }];
+        if (command === 'blockops_mod_status') return window.__mod;
+        if (command === 'install_blockops_mod') {
+          window.__readyCalls.push([command, args]);
+          window.__mod = { bundled: '0.1.0', installed: ['0.1.0'], current: true };
+          return window.__mod;
+        }
+        if (command === 'server_entry_present') return window.__entry;
+        if (command === 'add_server_entry') { window.__readyCalls.push([command]); window.__entry = true; return { address: '127.0.0.1:25595', added: 1, present: 0, failed: 0 }; }
+        if (command === 'detect_open_world') return { id: 3, port: 41234, name: 'Steve - World', version: '1.20.1' };
+        if (command === 'world_watch_alive') return true;
+        if (command === 'servers' || command === 'codes') return [];
+        return null;
+      }};
+    });
+    await ready.goto(baseUrl);
+    const panel = ready.locator('.readiness');
+    await panel.getByText('Сборок: 2 — Fabric 1.21.1, Vanilla 1.20.1').waitFor();
+    await panel.getByText('Осталось открыть мир для сети.').waitFor();
+    await panel.getByText('В игре: Esc → «Открыть для сети».').waitFor();
+    // The world shows up by itself once it is opened to LAN.
+    await ready.evaluate(() => { window.__local = { running: 0, open_worlds: 1, in_menu: 0, lan_worlds: [{ port: 41234, name: 'Steve - World', version: '1.20.1' }] }; });
+    await panel.getByText('Найден «Steve - World», Minecraft 1.20.1.').waitFor();
+    await panel.getByText('Всё готово к игре.').waitFor();
+    // The mod is offered for the fitting build only, and installed only after confirmation.
+    await panel.getByRole('button', { name: 'Установить в «Fabric» (Fabric 1.21.1)' }).click();
+    await panel.getByText(/добавит мод 0.1.0 в папку mods сборки «Fabric»/).waitFor();
+    assert.equal(await ready.evaluate(() => window.__readyCalls.length), 0, 'installed without confirmation');
+    await panel.getByRole('button', { name: 'Установить', exact: true }).click();
+    await panel.getByText('Установлен: Fabric 1.21.1.').waitFor();
+    // A guest needs the server entry, added with one click.
+    await ready.getByRole('button', { name: /Присоединиться/ }).click();
+    await panel.getByText('Осталось добавить сервер в Minecraft.').waitFor();
+    await panel.getByRole('button', { name: 'Добавить в Minecraft' }).click();
+    await panel.getByText('«BlockOps — мир друга» есть в «Сетевой игре».').waitFor();
+    await panel.getByText('Всё готово к игре.').waitFor();
+    assert.deepEqual(await ready.evaluate(() => window.__readyCalls), [
+      ['install_blockops_mod', { folder: null, gameDir: 'C:\\Games\\Fabric' }],
+      ['add_server_entry'],
+    ]);
+    await ready.close();
+
+    // The host sees who is in the world with their ping, and a notice when that changes.
+    const party = await browser.newPage();
+    await party.addInitScript(() => {
+      window.__players = [];
+      window.__TAURI_INTERNALS__ = { invoke: async command => {
+        if (command === 'status') return { mode: 'host', endpoint: null, active_connections: window.__players.length, last_error: null, transport: null, players: window.__players, rtt_ms: null };
+        if (command === 'servers' || command === 'codes') return [];
+        return null;
+      }};
+    });
+    await party.goto(baseUrl);
+    const players = party.getByLabel('Игроки в мире');
+    await players.getByText('В мире пока никого').waitFor();
+    await delay(1500); // Several polls without players notify nothing.
+    assert.equal(await party.locator('.toasts').count(), 0);
+    await party.evaluate(() => { window.__players = [{ id: 4, name: 'Steve', since: 0, rtt_ms: null }, { id: 5, name: null, since: 0, rtt_ms: 250 }]; });
+    await players.getByText('В мире: 2').waitFor();
+    await players.getByText('пинг измеряется…').waitFor();
+    await players.getByText('пинг 250 мс, возможны задержки').waitFor();
+    await players.getByText('Друг', { exact: true }).waitFor();
+    await party.locator('.toasts').getByText('Steve теперь в вашем мире').waitFor();
+    await party.locator('.toasts').getByText('Друг теперь в вашем мире').waitFor();
+    await party.evaluate(() => { window.__players = [{ id: 5, name: null, since: 0, rtt_ms: 34 }]; });
+    await players.getByText('пинг 34 мс', { exact: true }).waitFor();
+    await party.locator('.toasts').getByText('Steve больше не в мире').waitFor();
+    // Notices go away by themselves, although the status keeps refreshing.
+    await party.locator('.toasts').waitFor({ state: 'detached', timeout: 25000 });
+    assert.equal(await players.getByText('В мире: 1').count(), 1);
+    await party.close();
+
+    // A friend who came in by code can be remembered, and forgotten again.
+    const keeper = await browser.newPage();
+    await keeper.addInitScript(() => {
+      window.__book = { friends: [], worlds: [] };
+      window.__friendCalls = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'status') return { mode: 'host', endpoint: null, active_connections: 1, last_error: null, transport: null, players: [], rtt_ms: null };
+        if (command === 'codes') return [{ id: 'c1', code: 'ABCD-EFGH-JKMN-PQRS', expires_at: 4102444800, phase: 'active', peer: '12D3KooWFriend', error: null }];
+        if (command === 'friends') return window.__book;
+        if (command === 'remember_friend') {
+          window.__friendCalls.push([command, args]);
+          window.__book = { ...window.__book, friends: [{ peer: '12D3KooWFriend', name: 'Steve', added: 1767225600 }] };
+          return window.__book;
+        }
+        if (command === 'forget_friend') {
+          window.__friendCalls.push([command, args]);
+          window.__book = { ...window.__book, friends: [] };
+          return window.__book;
+        }
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await keeper.goto(baseUrl);
+    await keeper.getByRole('button', { name: 'Запомнить друга — пускать без кода' }).click();
+    await keeper.getByText('Друг запомнен: в следующий раз он войдёт без кода.').waitFor();
+    await keeper.getByText('Друзья, которые заходят без кода (1)').click();
+    await keeper.locator('.friends-panel').getByText('Steve', { exact: true }).waitFor();
+    await keeper.locator('.friends-panel').getByRole('button', { name: 'Забыть' }).click();
+    await keeper.getByText('Друзья, которые заходят без кода (0)').waitFor();
+    assert.deepEqual(await keeper.evaluate(() => window.__friendCalls), [
+      ['remember_friend', { id: 'c1' }],
+      ['forget_friend', { peer: '12D3KooWFriend' }],
+    ]);
+    await keeper.close();
+
+    // A guest enters a remembered world with one click, or learns why not.
+    const visitor = await browser.newPage();
+    await visitor.addInitScript(() => {
+      window.__session = null;
+      window.__joins = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'friends') return { friends: [], worlds: [{ host: '12D3KooWHost', label: 'Alex - World', added: 1767225600 }] };
+        if (command === 'join_friend') {
+          window.__joins.push(args);
+          if (window.__joins.length === 1) throw "The friend's world was not found";
+          window.__session = { mode: 'join', endpoint: '127.0.0.1:25595', active_connections: 0, last_error: null, transport: 'direct', players: [], rtt_ms: 40 };
+          return window.__session;
+        }
+        if (command === 'status') return window.__session;
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await visitor.goto(baseUrl);
+    await visitor.getByRole('button', { name: /Присоединиться/ }).click();
+    const worlds = visitor.getByLabel('Миры друзей');
+    await worlds.getByText('Alex - World').waitFor();
+    await worlds.getByRole('button', { name: 'Войти' }).click();
+    await visitor.getByText(/Мир друга сейчас не найден в сети/).waitFor();
+    await worlds.getByRole('button', { name: 'Войти' }).click();
+    await visitor.getByText('Соединение с другом установлено напрямую. Пинг: 40 мс.').waitFor();
+    assert.deepEqual(await visitor.evaluate(() => window.__joins), [{ host: '12D3KooWHost' }, { host: '12D3KooWHost' }]);
+    await visitor.close();
   } finally {
     if (browser) await browser.close();
     server.kill();

@@ -1,0 +1,25 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "See https://github.com/LaroPam/BlockOps"
+
+[[mods]]
+modId = "blockops"
+version = "${version}"
+displayName = "BlockOps Client"
+description = '''Client-side companion for BlockOps, under development.'''
+# Only this computer's game needs it; servers do not.
+displayTest = "IGNORE_ALL_VERSION"
+
+[[dependencies.blockops]]
+modId = "forge"
+mandatory = true
+versionRange = "[47,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.blockops]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.20.1]"
+ordering = "NONE"
+side = "CLIENT"

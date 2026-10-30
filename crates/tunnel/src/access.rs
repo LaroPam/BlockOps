@@ -50,6 +50,15 @@ impl Access {
         grants.insert(token, grant.clone());
         Ok(grant)
     }
+    /// End every grant bound to `peer`, which also cuts its open connections.
+    pub fn revoke_peer(&self, peer: PeerId) {
+        for grant in self.0.lock().unwrap().values() {
+            let state = grant.0.lock().unwrap();
+            if state.peer == Some(peer) {
+                state.revoked.cancel();
+            }
+        }
+    }
     pub fn authorize(&self, token: &[u8; 32], peer: PeerId) -> Option<CancellationToken> {
         let grants = self.0.lock().unwrap();
         let grant = grants.get(token)?;

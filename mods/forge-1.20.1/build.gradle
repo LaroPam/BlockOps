@@ -1,0 +1,32 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '6.0.54'
+}
+
+version = project.mod_version
+group = 'org.blockops'
+base { archivesName = "blockops-forge-${project.minecraft_version}" }
+
+// The bridge, publisher and private descriptor are shared by every loader and version.
+sourceSets.main.java.srcDir '../common/src/main/java'
+
+minecraft {
+    mappings channel: 'official', version: project.minecraft_version
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
+}
+
+// ForgeGradle rebuilds Minecraft 1.20.1 with JDK 17 and accepts no other toolchain.
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'minecraft', project.minecraft_version
+    filesMatching(['META-INF/mods.toml', 'blockops.json']) {
+        expand version: project.version, loader: 'forge', minecraft: project.minecraft_version
+    }
+}
+
+// Players need names the game uses at runtime, not the development ones.
+jar.finalizedBy('reobfJar')

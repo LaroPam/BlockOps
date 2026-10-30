@@ -1,6 +1,9 @@
-//! Install, update and remove the BlockOps Fabric mod in a launcher profile's game folder.
-//! Only jars whose `fabric.mod.json` declares the `blockops` id are ever replaced or
-//! removed; nothing else in the game folder is written.
+//! Install, update and remove the BlockOps mod in a launcher profile's game folder.
+//!
+//! The installer carries one jar per loader and Minecraft version, each naming its target in
+//! `blockops.json`. Only jars identified as BlockOps (by that file, or by `fabric.mod.json`
+//! for jars built before it existed) are ever replaced or removed; nothing else in the game
+//! folder is written.
 use crate::minecraft_profiles::{self, DiscoveredProfile};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -12,31 +15,46 @@ use std::{
 };
 
 pub const MOD_ID: &str = "blockops";
-/// The mod declares `minecraft = 1.21.1`; Fabric Loader refuses to start any other version.
-pub const MINECRAFT_VERSION: &str = "1.21.1";
+/// Loaders a bundled jar may target.
+const LOADERS: &[&str] = &["fabric", "forge", "neoforge"];
 const MAX_BUNDLED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MOD_FILES: usize = 4096;
 
-#[derive(Deserialize)]
-struct FabricManifest {
-    id: String,
-    version: String,
+/// The loader and Minecraft version a bundled jar is built for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    pub loader: String,
+    pub minecraft: String,
 }
 
-/// The `fabric.mod.json` of a jar, or `None` when it is not a readable Fabric mod.
-fn manifest(reader: impl Read + Seek) -> Option<FabricManifest> {
+#[derive(Deserialize)]
+struct Manifest {
+    id: String,
+    version: String,
+    loader: Option<String>,
+    minecraft: Option<String>,
+}
+
+/// `blockops.json`, or for jars built before it existed `fabric.mod.json`; `None` when the
+/// jar is not readable or carries neither.
+fn manifest(reader: impl Read + Seek) -> Option<Manifest> {
     let mut archive = zip::ZipArchive::new(reader).ok()?;
-    let entry = archive.by_name("fabric.mod.json").ok()?;
-    let mut bytes = Vec::new();
-    entry
-        .take(MAX_MANIFEST_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-        return None;
+    for name in ["blockops.json", "fabric.mod.json"] {
+        let Ok(entry) = archive.by_name(name) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        entry
+            .take(MAX_MANIFEST_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return None;
+        }
+        return serde_json::from_slice(&bytes).ok();
     }
-    serde_json::from_slice(&bytes).ok()
+    None
 }
 
 fn valid_version(version: &str) -> bool {
@@ -47,10 +65,11 @@ fn valid_version(version: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
 }
 
-/// The mod shipped with this BlockOps build.
+/// A mod jar shipped with this BlockOps build.
 pub struct BundledMod {
     bytes: Vec<u8>,
     pub version: String,
+    pub target: Target,
     sha256: [u8; 32],
 }
 
@@ -65,20 +84,65 @@ impl BundledMod {
             "Bundled mod is too large"
         );
         let manifest =
-            manifest(io::Cursor::new(&bytes)).context("Bundled file is not a Fabric mod")?;
+            manifest(io::Cursor::new(&bytes)).context("Bundled file is not a BlockOps mod")?;
+        let (Some(loader), Some(minecraft)) = (manifest.loader, manifest.minecraft) else {
+            anyhow::bail!("Bundled mod does not name its loader and Minecraft version");
+        };
         ensure!(
-            manifest.id == MOD_ID && valid_version(&manifest.version),
+            manifest.id == MOD_ID
+                && valid_version(&manifest.version)
+                && valid_version(&minecraft)
+                && LOADERS.contains(&loader.as_str()),
             "Bundled file is not the BlockOps mod"
         );
         Ok(Self {
             sha256: Sha256::digest(&bytes).into(),
             bytes,
             version: manifest.version,
+            target: Target { loader, minecraft },
         })
     }
 
     fn file_name(&self) -> String {
-        format!("blockops-fabric-client-{}.jar", self.version)
+        format!(
+            "blockops-{}-{}-{}.jar",
+            self.target.loader, self.target.minecraft, self.version
+        )
+    }
+}
+
+/// Every mod jar shipped with this build, one per target.
+#[derive(Default)]
+pub struct Catalog(Vec<BundledMod>);
+
+impl Catalog {
+    /// The BlockOps jars in a folder; other files are ignored.
+    pub fn load(folder: &Path) -> Self {
+        let Ok(entries) = fs::read_dir(folder) else {
+            return Self::default();
+        };
+        let mut mods: Vec<BundledMod> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "jar"))
+            .filter_map(|path| BundledMod::load(&path).ok())
+            .collect();
+        mods.sort_by(|a, b| {
+            (&a.target.loader, &a.target.minecraft).cmp(&(&b.target.loader, &b.target.minecraft))
+        });
+        mods.dedup_by(|a, b| a.target == b.target);
+        Self(mods)
+    }
+
+    pub fn get(&self, target: &Target) -> Option<&BundledMod> {
+        self.0.iter().find(|bundled| &bundled.target == target)
+    }
+
+    pub fn targets(&self) -> Vec<Target> {
+        self.0
+            .iter()
+            .map(|bundled| bundled.target.clone())
+            .collect()
     }
 }
 
@@ -94,8 +158,8 @@ pub struct ModStatus {
 
 #[derive(Debug)]
 pub enum InstallError {
-    /// No Fabric 1.21.1 launcher profile runs from this folder.
-    NotFabric,
+    /// No launcher profile of a loader and version this build carries a mod for uses the folder.
+    Unsupported,
     /// Another launcher profile runs from this folder and the mod would stop it starting.
     SharedWith(String),
     /// A mod file could not be replaced, usually because Minecraft is running.
@@ -107,7 +171,7 @@ pub enum InstallError {
 impl fmt::Display for InstallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotFabric => write!(f, "No Fabric {MINECRAFT_VERSION} profile uses this folder"),
+            Self::Unsupported => write!(f, "No supported loader and version uses this folder"),
             Self::SharedWith(name) => write!(f, "Profile {name:?} also uses this folder"),
             Self::InUse => write!(f, "A mod file is in use"),
             Self::NameTaken(name) => write!(f, "{name} is not the BlockOps mod"),
@@ -196,23 +260,35 @@ pub fn status(game_dir: &Path, bundled: Option<&BundledMod>) -> Result<ModStatus
     })
 }
 
-fn runs_safely(profile: &DiscoveredProfile) -> bool {
-    let fabric = profile.loader == "fabric"
-        && profile.metadata_complete
-        && profile.minecraft_version.as_deref() == Some(MINECRAFT_VERSION);
+/// The build a profile runs, when its metadata is complete.
+pub fn target_of(profile: &DiscoveredProfile) -> Option<Target> {
+    profile.metadata_complete.then_some(())?;
+    LOADERS.contains(&profile.loader).then_some(())?;
+    Some(Target {
+        loader: profile.loader.into(),
+        minecraft: profile.minecraft_version.clone()?,
+    })
+}
+
+fn runs_safely(profile: &DiscoveredProfile, target: &Target) -> bool {
     // The official launcher's built-in profiles name no version folder but run Vanilla,
     // which ignores the mods folder.
     let latest = matches!(
         profile.version_id.as_deref(),
         Some("latest-release" | "latest-snapshot")
     );
-    fabric || profile.loader == "vanilla" || latest
+    target_of(profile).as_ref() == Some(target) || profile.loader == "vanilla" || latest
 }
 
-/// Every launcher profile that runs from this folder must be Fabric 1.21.1 or Vanilla: the
-/// mod's Minecraft dependency would stop any other Fabric profile from starting, and other
-/// loaders or unrecognised versions cannot be vouched for.
-fn check_profiles(launcher_root: &Path, game_dir: &Path) -> Result<(), InstallError> {
+/// Choose the bundled jar for the folder's build. Every other launcher profile that runs from
+/// the folder must be the same build or Vanilla: the mod's Minecraft dependency would stop
+/// another version from starting, and other loaders or unrecognised builds cannot be vouched
+/// for.
+fn check_profiles<'a>(
+    launcher_root: &Path,
+    game_dir: &Path,
+    catalog: &'a Catalog,
+) -> Result<&'a BundledMod, InstallError> {
     let profiles = minecraft_profiles::discover(launcher_root)?;
     let sharing: Vec<_> = profiles
         .iter()
@@ -220,26 +296,28 @@ fn check_profiles(launcher_root: &Path, game_dir: &Path) -> Result<(), InstallEr
             Path::new(&profile.game_dir).canonicalize().ok().as_deref() == Some(game_dir)
         })
         .collect();
-    if !sharing
+    let bundled = sharing
         .iter()
-        .any(|profile| profile.loader == "fabric" && runs_safely(profile))
+        .find_map(|profile| target_of(profile).and_then(|target| catalog.get(&target)))
+        .ok_or(InstallError::Unsupported)?;
+    if let Some(other) = sharing
+        .iter()
+        .find(|profile| !runs_safely(profile, &bundled.target))
     {
-        return Err(InstallError::NotFabric);
-    }
-    if let Some(other) = sharing.iter().find(|profile| !runs_safely(profile)) {
         return Err(InstallError::SharedWith(other.name.clone()));
     }
-    Ok(())
+    Ok(bundled)
 }
 
-/// Re-inspect the launcher profiles, then place the bundled mod as the only BlockOps jar.
+/// Re-inspect the launcher profiles, then place the matching bundled mod as the only
+/// BlockOps jar.
 pub fn install(
     launcher_root: &Path,
     game_dir: &Path,
-    bundled: &BundledMod,
+    catalog: &Catalog,
 ) -> Result<ModStatus, InstallError> {
     let game_dir = game_folder(game_dir)?;
-    check_profiles(launcher_root, &game_dir)?;
+    let bundled = check_profiles(launcher_root, &game_dir, catalog)?;
     let mods = game_dir.join("mods");
     fs::create_dir_all(&mods)?;
     let found = installed(&mods)?;
@@ -257,14 +335,14 @@ pub fn install(
                 return Err(InstallError::NameTaken(bundled.file_name()));
             }
         }
-        // A hidden name without the .jar extension: Fabric Loader never loads a partial file.
+        // A hidden name without the .jar extension: no loader ever loads a partial file.
         let mut staged = tempfile::Builder::new()
             .prefix(".blockops-")
             .suffix(".tmp")
             .tempfile_in(&mods)?;
         staged.write_all(&bundled.bytes)?;
         staged.as_file().sync_all()?;
-        // Remove older copies first: two jars with one mod id would stop Fabric Loader.
+        // Remove older copies first: two jars with one mod id would stop the loader.
         for old in found.iter().filter(|old| old.path != target) {
             fs::remove_file(&old.path).map_err(in_use)?;
         }

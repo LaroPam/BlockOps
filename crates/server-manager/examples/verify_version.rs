@@ -9,8 +9,11 @@ async fn main() -> Result<()> {
     let jar = dir.path().join("server.jar");
     artifacts::download_server(&artifact, &jar).await?;
     artifacts::verify_file(&jar, &artifact.sha1)?;
+    let java = artifacts::find_release(&version)
+        .context("Unsupported Minecraft version")?
+        .java;
     println!(
-        "PASS: official Minecraft {version} metadata requires Java 21; JAR size and SHA-1 verified"
+        "PASS: official Minecraft {version} metadata requires Java {java}; JAR size and SHA-1 verified"
     );
     Ok(())
 }

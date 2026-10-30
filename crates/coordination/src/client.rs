@@ -138,6 +138,15 @@ impl Client {
         // Reserve the actual socket before consuming the one-use code; holding it across
         // the handshake also avoids a check-then-bind race with other local processes.
         let listener = tokio::net::TcpListener::bind(bind).await?;
+        self.join_on(code, listener).await
+    }
+
+    /// As [`Client::join`], on a listener the caller has already reserved.
+    pub async fn join_on(&self, code: &str, listener: tokio::net::TcpListener) -> Result<Session> {
+        ensure!(
+            listener.local_addr()?.ip().is_loopback(),
+            "Guest listener must bind loopback"
+        );
         let key = libp2p::identity::Keypair::generate_ed25519();
         let invite = self.redeem(code, key.public().to_peer_id()).await?;
         blockops_tunnel::join_with_listener(invite, listener, key).await

@@ -170,6 +170,19 @@ pub struct WorldWatch {
     pub alive: tokio::sync::watch::Receiver<bool>,
     cancel: tokio_util::sync::CancellationToken,
 }
+impl WorldWatch {
+    pub(crate) fn new(
+        port: u16,
+        alive: tokio::sync::watch::Receiver<bool>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self {
+            port,
+            alive,
+            cancel,
+        }
+    }
+}
 impl Drop for WorldWatch {
     fn drop(&mut self) {
         self.cancel.cancel();

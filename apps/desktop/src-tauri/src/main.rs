@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod friends;
 mod servers;
 use blockops_tunnel::Session;
 use serde::Serialize;
@@ -15,11 +16,16 @@ struct WorldSlot {
 struct WorldDetection {
     id: u64,
     port: u16,
+    /// From the world's LAN announcement, when there is one.
+    name: Option<String>,
+    version: Option<String>,
 }
 struct AppState(
     Mutex<Option<(String, Session, Option<String>)>>,
     Mutex<Vec<Invite>>,
     Mutex<Option<WorldSlot>>,
+    /// Started on first use; `None` until the announcement port could be opened.
+    Mutex<Option<blockops_coordination::lan::LanWorlds>>,
 );
 
 /// A friend's code, issued by a coordinator or announced on the public network.
@@ -59,6 +65,8 @@ struct View {
     active_connections: usize,
     last_error: Option<String>,
     transport: Option<String>,
+    players: Vec<blockops_tunnel::Player>,
+    rtt_ms: Option<u32>,
 }
 fn view(mode: &str, session: &Session) -> View {
     let status = session.status.borrow();
@@ -69,35 +77,101 @@ fn view(mode: &str, session: &Session) -> View {
         active_connections: status.active_connections,
         last_error: status.last_error.clone(),
         transport: status.transport.clone(),
+        players: status.players.clone(),
+        rtt_ms: status.rtt_ms,
     }
+}
+
+/// "Steve теперь в вашем мире" for each arrival and "… больше не в мире" for each departure.
+fn player_changes(
+    before: &[blockops_tunnel::Player],
+    after: &[blockops_tunnel::Player],
+) -> Vec<String> {
+    let name = |player: &blockops_tunnel::Player| player.name.clone().unwrap_or("Друг".into());
+    let arrived = after
+        .iter()
+        .filter(|p| !before.iter().any(|b| b.id == p.id))
+        .map(|p| format!("{} теперь в вашем мире", name(p)));
+    let left = before
+        .iter()
+        .filter(|p| !after.iter().any(|a| a.id == p.id))
+        .map(|p| format!("{} больше не в мире", name(p)));
+    arrived.chain(left).collect()
+}
+
+/// Tell the host in a Windows notification when friends come and go while BlockOps is in
+/// the background; the window shows its own notice. Ends with the session.
+fn notify_players(
+    app: tauri::AppHandle,
+    mut status: tokio::sync::watch::Receiver<blockops_tunnel::Status>,
+) {
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_notification::NotificationExt;
+        let mut known = status.borrow_and_update().players.clone();
+        let tooltip = |players: usize| {
+            if let Some(tray) = app.tray_by_id(TRAY) {
+                let _ = tray.set_tooltip(Some(match players {
+                    0 => "BlockOps".into(),
+                    players => format!("BlockOps — в мире: {players}"),
+                }));
+            }
+        };
+        while status.changed().await.is_ok() {
+            let players = status.borrow_and_update().players.clone();
+            let changes = player_changes(&known, &players);
+            if players.len() != known.len() {
+                tooltip(players.len());
+            }
+            known = players;
+            let focused = app
+                .get_webview_window("main")
+                .and_then(|window| window.is_focused().ok())
+                .unwrap_or(false);
+            if changes.is_empty() || focused {
+                continue;
+            }
+            let _ = app
+                .notification()
+                .builder()
+                .title("BlockOps")
+                .body(changes.join("\n"))
+                .show();
+        }
+        tooltip(0);
+    });
 }
 /// `direct` meets friends through the public network instead of a coordinator and relay.
 #[tauri::command]
 async fn host(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     target: String,
     relay: Option<String>,
     world_watch_id: Option<u64>,
     direct: Option<bool>,
+    label: Option<String>,
 ) -> Result<View, String> {
     make_host(
-        state,
+        app,
         target,
         relay,
         None,
         world_watch_id,
         direct.unwrap_or(false),
+        label.unwrap_or_default(),
     )
     .await
 }
+/// `label` names the world for friends who remember it, e.g. "Steve - New World".
 async fn make_host(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     target: String,
     relay: Option<String>,
     owner: Option<String>,
     world_watch_id: Option<u64>,
     direct: bool,
+    label: String,
 ) -> Result<View, String> {
+    let state = app.state::<AppState>();
     if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
@@ -131,10 +205,27 @@ async fn make_host(
     // Joining the public network takes up to a minute; the status lock is not held meanwhile.
     let lifetime = std::time::Duration::from_secs(3600);
     let session = if direct {
+        // A damaged friends book must not stop the game: then this session remembers no one.
+        let identity = match app
+            .state::<friends::Friends>()
+            .read()
+            .await
+            .and_then(|book| {
+                Ok(blockops_tunnel::direct::HostIdentity {
+                    key: book.keypair().map_err(|e| e.to_string())?,
+                    meeting: book.meeting().map_err(|e| e.to_string())?,
+                    label: label.clone(),
+                    friends: book.friend_grants(),
+                })
+            }) {
+            Ok(identity) => identity,
+            Err(_) => blockops_tunnel::direct::HostIdentity::ephemeral(&label),
+        };
         blockops_tunnel::direct::host_direct(
             target,
             blockops_tunnel::direct::Network::public(),
             lifetime,
+            identity,
         )
         .await
     } else {
@@ -172,6 +263,7 @@ async fn make_host(
         }
     }
     let result = view("host", &session);
+    notify_players(app.clone(), session.status.clone());
     let owner = world_watch_id
         .map(|id| format!("world-watch:{id}"))
         .or(owner);
@@ -269,32 +361,80 @@ async fn revoke_code(state: State<'_, AppState>, id: String) -> Result<(), Strin
 }
 #[tauri::command]
 async fn join_code(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     coordinator: String,
     code: String,
 ) -> Result<View, String> {
+    // A four-group code was announced on the public network; others come from a coordinator.
+    if blockops_tunnel::pake::is_direct_code(&code) {
+        return join_serverless(&app, blockops_tunnel::direct::Ticket::Code(code)).await;
+    }
     if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
     state.2.lock().await.take();
-    // A four-group code was announced on the public network; others come from a coordinator.
-    let session = if blockops_tunnel::pake::is_direct_code(&code) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| e.to_string())?;
-        blockops_tunnel::direct::join_direct(
-            &code,
-            listener,
-            blockops_tunnel::direct::Network::public(),
-        )
+    let listener = guest_listener().await?;
+    let session = blockops_coordination::client::Client::new(&coordinator)
+        .map_err(|e| e.to_string())?
+        .join_on(&code, listener)
         .await
-    } else {
-        blockops_coordination::client::Client::new(&coordinator)
-            .map_err(|e| e.to_string())?
-            .join(&code, "127.0.0.1:0".parse().unwrap())
-            .await
+        .map_err(|e| e.to_string())?;
+    keep_guest_session(&state, session).await
+}
+
+/// Enter a remembered friend's world without a code.
+#[tauri::command]
+async fn join_friend(app: tauri::AppHandle, host: String) -> Result<View, String> {
+    let world = app
+        .state::<friends::Friends>()
+        .read()
+        .await?
+        .world(&host)
+        .map_err(|e| e.to_string())?;
+    join_serverless(&app, blockops_tunnel::direct::Ticket::Friend(world)).await
+}
+
+/// Join through the public network with this computer's lasting key, and keep the world
+/// the host shared so the next visit needs no code.
+async fn join_serverless(
+    app: &tauri::AppHandle,
+    ticket: blockops_tunnel::direct::Ticket,
+) -> Result<View, String> {
+    let state = app.state::<AppState>();
+    if state.0.lock().await.is_some() {
+        return Err("Сначала остановите текущую сессию".into());
     }
+    state.2.lock().await.take();
+    let friends = app.state::<friends::Friends>();
+    let key = friends
+        .read()
+        .await
+        .and_then(|book| book.keypair().map_err(|e| e.to_string()))
+        // Without a readable friends book this visit uses a one-off key.
+        .unwrap_or_else(|_| blockops_tunnel::direct::HostIdentity::ephemeral("").key);
+    let listener = guest_listener().await?;
+    let session = blockops_tunnel::direct::join_direct(
+        ticket,
+        listener,
+        blockops_tunnel::direct::Network::public(),
+        key,
+    )
+    .await
     .map_err(|e| e.to_string())?;
+    if let Some(world) = &session.world {
+        // Not remembering only costs a code next time.
+        let _ = friends
+            .change(|book| {
+                book.remember_world(world);
+                Ok(())
+            })
+            .await;
+    }
+    keep_guest_session(&state, session).await
+}
+
+async fn keep_guest_session(state: &State<'_, AppState>, session: Session) -> Result<View, String> {
     let mut guard = state.0.lock().await;
     if guard.is_some() {
         session.stop().await;
@@ -304,6 +444,107 @@ async fn join_code(
     *guard = Some(("join".into(), session, None));
     Ok(result)
 }
+/// The guest's fixed address, so a server saved in Minecraft works every time.
+const GUEST_ADDRESS: &str = "127.0.0.1:25595";
+const GUEST_SERVER_NAME: &str = "BlockOps — мир друга";
+
+/// The fixed address when it is free, otherwise any loopback port.
+async fn guest_listener() -> Result<tokio::net::TcpListener, String> {
+    match tokio::net::TcpListener::bind(GUEST_ADDRESS).await {
+        Ok(listener) => Ok(listener),
+        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| e.to_string()),
+    }
+}
+
+#[derive(Serialize)]
+struct ServerEntries {
+    address: &'static str,
+    added: usize,
+    present: usize,
+    failed: usize,
+}
+
+/// Every Minecraft game folder known from the launcher, the saved choice and the standard
+/// folder, each once.
+async fn game_folders(servers: &servers::Servers) -> Vec<std::path::PathBuf> {
+    let mut folders = Vec::new();
+    if let Ok(root) = launcher_root(None) {
+        folders.push(root.clone());
+        let root_for_scan = root.clone();
+        if let Ok(Ok(profiles)) = tokio::task::spawn_blocking(move || {
+            blockops_server_manager::minecraft_profiles::discover(&root_for_scan)
+        })
+        .await
+        {
+            folders.extend(
+                profiles
+                    .into_iter()
+                    .map(|p| std::path::PathBuf::from(p.game_dir)),
+            );
+        }
+    }
+    let manager = servers.manager.clone();
+    if let Ok(Ok(Some(selection))) =
+        tokio::task::spawn_blocking(move || manager.minecraft_selection()).await
+    {
+        folders.push(selection.game_dir.into());
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut seen = std::collections::HashSet::new();
+        folders
+            .into_iter()
+            .filter_map(|folder| folder.canonicalize().ok())
+            .filter(|folder| folder.is_dir() && seen.insert(folder.clone()))
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Add the guest's fixed address to the server list of every known game folder. Works in
+/// any version.
+#[tauri::command]
+async fn add_server_entry(servers: State<'_, servers::Servers>) -> Result<ServerEntries, String> {
+    let folders = game_folders(&servers).await;
+    tokio::task::spawn_blocking(move || {
+        let mut result = ServerEntries {
+            address: GUEST_ADDRESS,
+            added: 0,
+            present: 0,
+            failed: 0,
+        };
+        for folder in folders {
+            match blockops_server_manager::server_list::ensure_entry(
+                &folder,
+                GUEST_SERVER_NAME,
+                GUEST_ADDRESS,
+            ) {
+                Ok(true) => result.added += 1,
+                Ok(false) => result.present += 1,
+                Err(_) => result.failed += 1,
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|_| "Не удалось обновить список серверов Minecraft".to_owned())
+}
+
+/// Whether some known game folder already lists the guest's fixed address. Reads only.
+#[tauri::command]
+async fn server_entry_present(servers: State<'_, servers::Servers>) -> Result<bool, String> {
+    let folders = game_folders(&servers).await;
+    tokio::task::spawn_blocking(move || {
+        folders.iter().any(|folder| {
+            blockops_server_manager::server_list::has_entry(folder, GUEST_ADDRESS).unwrap_or(false)
+        })
+    })
+    .await
+    .map_err(|_| "Не удалось прочитать список серверов Minecraft".to_owned())
+}
+
 const NO_COMPANION: &str = "Minecraft с модом BlockOps не найден на этом компьютере. Запустите игру с модом или введите код мода вручную.";
 
 /// Running Minecraft instances that advertise the mod through private discovery.
@@ -333,33 +574,69 @@ fn prefer(
     }
 }
 
+const NO_WORLD: &str = "Открытый для сети мир не найден. В Minecraft откройте мир и нажмите «Открыть для сети»: BlockOps найдёт его сам.";
+
+/// Worlds announced to LAN from this computer by any Minecraft version. The listener starts
+/// on first use and is retried while its port cannot be opened.
+async fn lan_worlds(state: &AppState) -> Option<blockops_coordination::lan::LanWorlds> {
+    let mut lan = state.3.lock().await;
+    if lan.is_none() {
+        *lan = blockops_coordination::lan::LanWorlds::listen().ok();
+    }
+    lan.clone()
+}
+
 #[derive(Serialize)]
 struct LocalMinecraft {
     running: usize,
     open_worlds: usize,
     in_menu: usize,
+    lan_worlds: Vec<blockops_coordination::lan::LanWorld>,
 }
 
-/// What Minecraft with the mod reports doing on this computer. Reads only the private
-/// descriptors and spends no bridge, so the interface can poll it.
+/// What Minecraft reports doing on this computer: the mod through its private descriptors,
+/// any version through LAN announcements. Spends no bridge, so the interface can poll it.
 #[tauri::command]
-async fn local_minecraft() -> Result<LocalMinecraft, String> {
+async fn local_minecraft(state: State<'_, AppState>) -> Result<LocalMinecraft, String> {
     use blockops_local_discovery::GameState;
     let found = companions().await;
     let count = |state| found.iter().filter(|c| c.state == state).count();
+    let lan_worlds = match lan_worlds(&state).await {
+        Some(lan) => lan.current(),
+        None => Vec::new(),
+    };
     Ok(LocalMinecraft {
         running: found.len(),
-        open_worlds: count(GameState::Lan),
+        // A world opened with the mod is announced too; count each world once.
+        open_worlds: count(GameState::Lan).max(lan_worlds.len()),
         in_menu: count(GameState::Menu),
+        lan_worlds,
     })
 }
 
-/// Ask each discovered companion for an open world; exactly one must have it.
-async fn find_open_world() -> Result<blockops_coordination::local_bridge::WorldWatch, String> {
-    let found = companions().await;
-    if found.is_empty() {
-        return Err(NO_COMPANION.into());
+/// The open world: through the mod when it is installed, which also authenticates the
+/// answer, otherwise from the LAN announcement every Minecraft version makes.
+async fn find_open_world(
+    lan: Option<blockops_coordination::lan::LanWorlds>,
+) -> Result<blockops_coordination::local_bridge::WorldWatch, String> {
+    if let Some(world) = find_world_through_mod().await? {
+        return Ok(world);
     }
+    let lan = lan.ok_or(NO_WORLD)?;
+    match lan.current().as_slice() {
+        [] => Err(NO_WORLD.into()),
+        [world] => Ok(lan.watch(world.port)),
+        _ => Err(
+            "Открыто несколько миров. Оставьте открытым для сети один и попробуйте снова.".into(),
+        ),
+    }
+}
+
+/// Ask each discovered companion for an open world. `None` when no mod has one; an error
+/// when several do, since only the player can tell which world to share.
+async fn find_world_through_mod(
+) -> Result<Option<blockops_coordination::local_bridge::WorldWatch>, String> {
+    let found = companions().await;
     let mut worlds = Vec::new();
     for companion in prefer(&found, blockops_local_discovery::GameState::Lan) {
         // Each probe uses up that bridge; the mod advertises a fresh one within a second.
@@ -370,15 +647,12 @@ async fn find_open_world() -> Result<blockops_coordination::local_bridge::WorldW
             worlds.push(watch);
         }
     }
-    let world = worlds.pop().ok_or(
-        "Minecraft с модом BlockOps запущен, но открытый для сети мир не найден. Откройте мир для сети и попробуйте снова.",
-    )?;
-    if !worlds.is_empty() {
+    if worlds.len() > 1 {
         return Err(
             "Открыты миры в нескольких копиях Minecraft. Оставьте один и попробуйте снова.".into(),
         );
     }
-    Ok(world)
+    Ok(worlds.pop())
 }
 
 /// Without a pairing code, the only discovered Minecraft is asked to join.
@@ -445,7 +719,14 @@ async fn detect_open_world(
                 "Не удалось определить порт. Откройте мир для сети и получите новый код мода."
                     .to_owned()
             })?,
-        None => find_open_world().await?,
+        None => find_open_world(lan_worlds(&state).await).await?,
+    };
+    let announced = match lan_worlds(&state).await {
+        Some(lan) => lan
+            .current()
+            .into_iter()
+            .find(|world| world.port == watch.port),
+        None => None,
     };
     let id = NEXT_WORLD.fetch_add(1, Ordering::Relaxed);
     let port = watch.port;
@@ -488,7 +769,12 @@ async fn detect_open_world(
             session.stop().await;
         }
     });
-    Ok(WorldDetection { id, port })
+    Ok(WorldDetection {
+        id,
+        port,
+        name: announced.as_ref().map(|world| world.name.clone()),
+        version: announced.and_then(|world| world.version),
+    })
 }
 
 #[tauri::command]
@@ -527,39 +813,73 @@ async fn discover_minecraft_profiles(
         "Не удалось прочитать профили Minecraft Launcher. Проверьте выбранную папку.".to_owned()
     })
 }
-/// The mod jar the installer placed beside the application, if this build carries one.
-fn bundled_mod(
-    app: &tauri::AppHandle,
-) -> Option<blockops_server_manager::blockops_mod::BundledMod> {
-    let directory = app.path().resource_dir().ok()?.join("mod");
-    let jar = std::fs::read_dir(directory)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|extension| extension == "jar"))?;
-    blockops_server_manager::blockops_mod::BundledMod::load(&jar).ok()
+/// The mod jars the installer placed beside the application, one per loader and version.
+fn mod_catalog(app: &tauri::AppHandle) -> blockops_server_manager::blockops_mod::Catalog {
+    match app.path().resource_dir() {
+        Ok(directory) => {
+            blockops_server_manager::blockops_mod::Catalog::load(&directory.join("mod"))
+        }
+        Err(_) => Default::default(),
+    }
 }
 
-fn explain_mod_error(error: blockops_server_manager::blockops_mod::InstallError) -> String {
+/// "Fabric 1.21.1, Forge 1.20.1" for messages.
+fn describe_targets(targets: &[blockops_server_manager::blockops_mod::Target]) -> String {
+    targets
+        .iter()
+        .map(|target| {
+            let loader = match target.loader.as_str() {
+                "fabric" => "Fabric",
+                "forge" => "Forge",
+                "neoforge" => "NeoForge",
+                other => other,
+            };
+            format!("{loader} {}", target.minecraft)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn explain_mod_error(
+    error: blockops_server_manager::blockops_mod::InstallError,
+    targets: &[blockops_server_manager::blockops_mod::Target],
+) -> String {
     use blockops_server_manager::blockops_mod::InstallError;
     match error {
-        InstallError::NotFabric => "Эта папка не принадлежит сборке Fabric 1.21.1 из Minecraft Launcher. Мод BlockOps работает только с Fabric 1.21.1.".into(),
-        InstallError::SharedWith(name) => format!("Из этой папки также запускается профиль «{name}», и мод BlockOps может помешать ему. Укажите для сборки Fabric 1.21.1 отдельную папку игры в настройках профиля Minecraft Launcher."),
+        InstallError::Unsupported if targets.is_empty() => "В этой сборке BlockOps нет мода. Установите BlockOps из сборки, в которую он входит.".into(),
+        InstallError::Unsupported => format!("Эта папка не принадлежит сборке из Minecraft Launcher, для которой есть мод BlockOps. Мод есть для: {}.", describe_targets(targets)),
+        InstallError::SharedWith(name) => format!("Из этой папки также запускается профиль «{name}», и мод BlockOps может помешать ему. Укажите для этой сборки отдельную папку игры в настройках профиля Minecraft Launcher."),
         InstallError::InUse => "Файл мода занят. Закройте Minecraft и повторите.".into(),
         InstallError::NameTaken(name) => format!("В папке mods уже есть файл {name}, но это не мод BlockOps. Переименуйте или удалите его и повторите."),
         InstallError::Other(_) => "Не удалось изменить папку модов. Проверьте папку сборки и права доступа.".into(),
     }
 }
 
+/// The loaders and versions this build carries a mod for.
+#[tauri::command]
+async fn blockops_mod_targets(
+    app: tauri::AppHandle,
+) -> Result<Vec<blockops_server_manager::blockops_mod::Target>, String> {
+    tokio::task::spawn_blocking(move || mod_catalog(&app).targets())
+        .await
+        .map_err(|_| "Не удалось прочитать моды BlockOps".to_owned())
+}
+
+/// `loader` and `minecraft` name the build as the profile list shows it; they only choose
+/// which bundled version to compare with.
 #[tauri::command]
 async fn blockops_mod_status(
     app: tauri::AppHandle,
     game_dir: String,
+    loader: String,
+    minecraft: String,
 ) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
     tokio::task::spawn_blocking(move || {
+        let catalog = mod_catalog(&app);
+        let target = blockops_server_manager::blockops_mod::Target { loader, minecraft };
         blockops_server_manager::blockops_mod::status(
             std::path::Path::new(&game_dir),
-            bundled_mod(&app).as_ref(),
+            catalog.get(&target),
         )
     })
     .await
@@ -575,35 +895,37 @@ async fn install_blockops_mod(
     game_dir: String,
 ) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
     let root = launcher_root(folder)?;
-    let bundled = bundled_mod(&app).ok_or(
-        "В этой сборке BlockOps нет мода. Установите BlockOps из сборки, в которую он входит.",
-    )?;
     tokio::task::spawn_blocking(move || {
+        let catalog = mod_catalog(&app);
         blockops_server_manager::blockops_mod::install(
             &root,
             std::path::Path::new(&game_dir),
-            &bundled,
+            &catalog,
         )
+        .map_err(|error| explain_mod_error(error, &catalog.targets()))
     })
     .await
     .map_err(|_| "Не удалось установить мод BlockOps".to_owned())?
-    .map_err(explain_mod_error)
 }
 
 #[tauri::command]
 async fn remove_blockops_mod(
     app: tauri::AppHandle,
     game_dir: String,
+    loader: String,
+    minecraft: String,
 ) -> Result<blockops_server_manager::blockops_mod::ModStatus, String> {
     tokio::task::spawn_blocking(move || {
+        let catalog = mod_catalog(&app);
+        let target = blockops_server_manager::blockops_mod::Target { loader, minecraft };
         blockops_server_manager::blockops_mod::remove(
             std::path::Path::new(&game_dir),
-            bundled_mod(&app).as_ref(),
+            catalog.get(&target),
         )
+        .map_err(|error| explain_mod_error(error, &catalog.targets()))
     })
     .await
     .map_err(|_| "Не удалось удалить мод BlockOps".to_owned())?
-    .map_err(explain_mod_error)
 }
 
 #[tauri::command]
@@ -639,16 +961,196 @@ fn open_eula(app: tauri::AppHandle) -> Result<(), String> {
         .open_url(blockops_server_manager::EULA_URL, None::<&str>)
         .map_err(|e| e.to_string())
 }
+const TRAY: &str = "main";
+static TRAY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The window goes, BlockOps stays: friends keep playing and the tray brings it back.
+fn hide_to_tray(app: &tauri::AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    if !TOLD.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let _ = app
+            .notification()
+            .builder()
+            .title("BlockOps работает в фоне")
+            .body("Соединение не прервано. Значок BlockOps рядом с часами откроет окно или завершит работу.")
+            .show();
+    }
+}
+
+/// What closing BlockOps would interrupt, in words for the question asked first.
+async fn activity(app: &tauri::AppHandle) -> Vec<String> {
+    let mut active = Vec::new();
+    match app.state::<AppState>().0.try_lock() {
+        Ok(current) => {
+            if let Some((mode, session, _)) = current.as_ref() {
+                let players = session.status.borrow().players.len();
+                active.push(match (mode.as_str(), players) {
+                    ("host", 0) => "ваш мир открыт для друзей по приглашению".into(),
+                    ("host", players) => format!("в вашем мире играют друзья: {players}"),
+                    _ => "вы подключены к миру друга".into(),
+                });
+            }
+        }
+        Err(_) => active.push("BlockOps устанавливает соединение".into()),
+    }
+    match app.state::<servers::Servers>().processes.try_lock() {
+        Ok(processes) => {
+            let running = processes
+                .values()
+                .filter(|p| !matches!(p.status.borrow().phase.as_str(), "stopped" | "failed"))
+                .count();
+            if running > 0 {
+                active.push(format!("работает ваш сервер Minecraft ({running})"));
+            }
+        }
+        Err(_) => active.push("запускается ваш сервер Minecraft".into()),
+    }
+    active
+}
+
+enum Closing {
+    Tray,
+    Quit,
+    Stay,
+}
+
+/// A native question, so it works even while the page is busy.
+async fn ask_before_closing(app: &tauri::AppHandle, active: &[String]) -> Closing {
+    use tauri_plugin_dialog::{
+        DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
+    };
+    const TRAY_LABEL: &str = "Свернуть в трей";
+    const QUIT_LABEL: &str = "Закрыть";
+    let tray = TRAY_READY.load(std::sync::atomic::Ordering::SeqCst);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .message(format!(
+            "Сейчас {}.\n\nЕсли закрыть BlockOps, это прекратится.{}",
+            active.join(", "),
+            if tray {
+                " Свёрнутый в трей BlockOps продолжит работать в фоне."
+            } else {
+                ""
+            }
+        ))
+        .title("Закрыть BlockOps?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(if tray {
+            MessageDialogButtons::YesNoCancelCustom(
+                TRAY_LABEL.into(),
+                QUIT_LABEL.into(),
+                "Отмена".into(),
+            )
+        } else {
+            MessageDialogButtons::OkCancelCustom(QUIT_LABEL.into(), "Отмена".into())
+        });
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.parent(&window);
+    }
+    dialog.show_with_result(move |result| {
+        let _ = tx.send(result);
+    });
+    match rx.await {
+        Ok(MessageDialogResult::Yes) if tray => Closing::Tray,
+        Ok(MessageDialogResult::No | MessageDialogResult::Ok) => Closing::Quit,
+        Ok(MessageDialogResult::Custom(label)) if label == TRAY_LABEL => Closing::Tray,
+        Ok(MessageDialogResult::Custom(label)) if label == QUIT_LABEL => Closing::Quit,
+        _ => Closing::Stay,
+    }
+}
+
+/// Stop connections and servers, saving worlds, then exit. Runs once.
+async fn quit(app: tauri::AppHandle) {
+    let state = app.state::<servers::Servers>();
+    if state
+        .closing
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    let _ = stop(app.state::<AppState>()).await;
+    let state = app.state::<servers::Servers>();
+    let _install = state.installing.lock().await;
+    // A copy/restore may still be executing after its IPC request was dropped.
+    let _disk_operation = state.disk_operations.lock().await;
+    let _process_stop = state.process_stops.lock().await;
+    let all = std::mem::take(&mut *state.processes.lock().await);
+    let mut stops = tokio::task::JoinSet::new();
+    for (_, process) in all {
+        stops.spawn(process.stop());
+    }
+    while stops.join_next().await.is_some() {}
+    app.exit(0);
+}
+
+/// The tray icon: a click opens the window, the menu also quits.
+fn tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::{
+        menu::{Menu, MenuItem},
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    };
+    let open = MenuItem::with_id(app, "open", "Открыть BlockOps", true, None::<&str>)?;
+    let exit = MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
+    let mut builder = TrayIconBuilder::with_id(TRAY)
+        .tooltip("BlockOps")
+        .menu(&Menu::with_items(app, &[&open, &exit])?)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_window(app),
+            "quit" => {
+                tauri::async_runtime::spawn(quit(app.clone()));
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
+        // Starting BlockOps again, e.g. while it sits in the tray, opens the running one.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_window(app)
+        }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState(
             Mutex::new(None),
             Mutex::new(Vec::new()),
             Mutex::new(None),
+            Mutex::new(None),
         ))
         .setup(|app| {
-            let manager = blockops_server_manager::Manager::open(app.path().app_data_dir()?)?;
+            let data = app.path().app_data_dir()?;
+            app.manage(friends::Friends(Mutex::new(data.join("friends.json"))));
+            let manager = blockops_server_manager::Manager::open(data)?;
             app.manage(servers::Servers {
                 manager,
                 processes: Mutex::new(std::collections::HashMap::new()),
@@ -658,33 +1160,35 @@ fn main() {
                 process_stops: std::sync::Arc::new(Mutex::new(())),
                 closing: std::sync::atomic::AtomicBool::new(false),
             });
+            // Without a tray (some Linux desktops) the window still works; closing then quits.
+            let tray_ready = tray(app).is_ok();
+            TRAY_READY.store(tray_ready, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         })
+        // Closing with friends in the world or a server running asks first; the answer can
+        // keep BlockOps running in the tray.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                static ASKING: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
                 let app = window.app_handle().clone();
-                let state = app.state::<servers::Servers>();
-                if state
-                    .closing
-                    .swap(true, std::sync::atomic::Ordering::SeqCst)
-                {
-                    return;
-                }
                 tauri::async_runtime::spawn(async move {
-                    let _ = stop(app.state::<AppState>()).await;
-                    let state = app.state::<servers::Servers>();
-                    let _install = state.installing.lock().await;
-                    // A copy/restore may still be executing after its IPC request was dropped.
-                    let _disk_operation = state.disk_operations.lock().await;
-                    let _process_stop = state.process_stops.lock().await;
-                    let all = std::mem::take(&mut *state.processes.lock().await);
-                    let mut stops = tokio::task::JoinSet::new();
-                    for (_, process) in all {
-                        stops.spawn(process.stop());
+                    if ASKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return;
                     }
-                    while stops.join_next().await.is_some() {}
-                    app.exit(0);
+                    let active = activity(&app).await;
+                    let choice = if active.is_empty() {
+                        Closing::Quit
+                    } else {
+                        ask_before_closing(&app, &active).await
+                    };
+                    ASKING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    match choice {
+                        Closing::Tray => hide_to_tray(&app),
+                        Closing::Quit => quit(app).await,
+                        Closing::Stay => {}
+                    }
                 });
             }
         })
@@ -693,13 +1197,21 @@ fn main() {
             codes,
             revoke_code,
             join_code,
+            join_friend,
+            friends::friends,
+            friends::remember_friend,
+            friends::forget_friend,
+            friends::forget_world,
             join_in_minecraft,
             detect_open_world,
             world_watch_alive,
             local_minecraft,
             open_eula,
             discover_minecraft_profiles,
+            add_server_entry,
+            server_entry_present,
             blockops_mod_status,
+            blockops_mod_targets,
             install_blockops_mod,
             remove_blockops_mod,
             get_minecraft_selection,

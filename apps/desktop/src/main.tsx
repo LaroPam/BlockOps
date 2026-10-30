@@ -5,19 +5,40 @@ import './style.css';
 import { Servers } from './Servers';
 import { Codes } from './Codes';
 import { MinecraftProfiles } from './MinecraftProfiles';
+import { Readiness, type WorldReadiness } from './Readiness';
+import { FriendWorlds, HostFriends } from './Friends';
 import { explainError } from './errors';
 import { findCode, invitationText, type CodeStatus } from './invite';
 
+/** Someone in the host's world; server list pings are not players. */
+type Player = { id: number; name: string | null; since: number; rtt_ms: number | null };
 type Session = {
   mode: string;
   endpoint: string | null;
   active_connections: number;
   last_error: string | null;
   transport: string | null;
+  players?: Player[];
+  /** Guest: round trip to the host's computer. */
+  rtt_ms?: number | null;
 };
 
+/** "34 мс", with a word for how it will feel in the game. */
+function describePing(ms: number): string {
+  return `${ms} мс${ms < 80 ? '' : ms < 200 ? ', терпимо' : ', возможны задержки'}`;
+}
+const playerName = (player: Player) => player.name ?? 'Друг';
+
 /** What Minecraft with the BlockOps mod reports doing on this computer. */
-type LocalMinecraft = { running: number; open_worlds: number; in_menu: number };
+type LanWorld = { port: number; name: string; version: string | null };
+/** The guest's fixed address; a server saved in Minecraft with it works every time. */
+const GUEST_ADDRESS = '127.0.0.1:25595';
+type LocalMinecraft = { running: number; open_worlds: number; in_menu: number; lan_worlds?: LanWorld[] };
+
+/** "«Steve - New World», Minecraft 1.20.1" from a LAN announcement, when known. */
+function describeWorld(name: string | null | undefined, version: string | null | undefined): string {
+  return [name && `«${name}»`, version && `Minecraft ${version}`].filter(Boolean).join(', ');
+}
 
 const SETTINGS_KEY = 'blockops.connection';
 const DEFAULT_COORDINATOR = 'http://127.0.0.1:8080';
@@ -52,6 +73,7 @@ function App() {
   const [pairingCode, setPairingCode] = useState('');
   const [joinFeedback, setJoinFeedback] = useState('');
   const [inviteNotice, setInviteNotice] = useState('');
+  const [serverEntry, setServerEntry] = useState('');
   const [coordinator, setCoordinator] = useState(() => savedSettings().coordinator);
   const [connection, setConnection] = useState<Connection>(() => savedSettings().connection);
   const direct = connection === 'direct';
@@ -59,6 +81,11 @@ function App() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<LocalMinecraft | null>(null);
+  const [readinessRevision, setReadinessRevision] = useState(0);
+  const [arrivals, setArrivals] = useState<string[]>([]);
+  const [friendsRevision, setFriendsRevision] = useState(0);
+  const [searchingFriend, setSearchingFriend] = useState(false);
+  const knownPlayers = useRef<Player[] | null>(null);
   const autoDetectTried = useRef(false);
   const autoJoinTried = useRef(false);
   const sessionRef = useRef<HTMLElement>(null);
@@ -109,6 +136,24 @@ function App() {
     return () => { active = false; clearInterval(timer); };
   }, [watchingMinecraft]);
 
+  // Friends coming and going show up as a short notice; the first look only remembers them.
+  useEffect(() => {
+    const players = session?.mode === 'host' ? session.players ?? [] : null;
+    const before = knownPlayers.current;
+    knownPlayers.current = players;
+    if (!players || !before) return;
+    const changes = [
+      ...players.filter(p => !before.some(b => b.id === p.id)).map(p => `${playerName(p)} теперь в вашем мире`),
+      ...before.filter(b => !players.some(p => p.id === b.id)).map(b => `${playerName(b)} больше не в мире`),
+    ];
+    if (changes.length) setArrivals(current => [...current, ...changes].slice(-3));
+  }, [session]);
+  useEffect(() => {
+    if (arrivals.length === 0) return;
+    const timer = window.setTimeout(() => setArrivals(current => current.slice(1)), 6000);
+    return () => window.clearTimeout(timer);
+  }, [arrivals]);
+
   // A world newly opened to LAN is picked up once; closing it re-arms detection.
   useEffect(() => {
     if (!local) return;
@@ -144,6 +189,15 @@ function App() {
     finally { setBusy(false); }
   }
 
+  // A remembered world needs no code; finding the friend in the network takes up to a minute.
+  async function joinFriend(host: string) {
+    setBusy(true); setSearchingFriend(true);
+    setError('');
+    try { setSession(await invoke<Session>('join_friend', { host })); }
+    catch (e) { setError(explainError(e)); }
+    finally { setBusy(false); setSearchingFriend(false); }
+  }
+
   // A whole pasted invitation is reduced to its code and connects at once.
   function pasteInvitation(e: React.ClipboardEvent<HTMLInputElement>) {
     const code = findCode(e.clipboardData.getData('text'));
@@ -157,9 +211,10 @@ function App() {
   async function detectWorld(pairingCode: string | null) {
     setHostPairingCode(''); setBusy(true); setWorldError(''); setWorldFeedback('');
     try {
-      const world = await invoke<{id:number;port:number}>('detect_open_world', { pairingCode });
+      const world = await invoke<{id:number;port:number;name?:string|null;version?:string|null}>('detect_open_world', { pairingCode });
+      const described = describeWorld(world.name, world.version);
       setWorldWatchId(world.id); setLanPort(String(world.port));
-      setWorldFeedback('Порт получен из Minecraft. BlockOps отслеживает, открыт ли мир.');
+      setWorldFeedback(`Порт получен из Minecraft${described ? `: ${described}` : ''}. BlockOps отслеживает, открыт ли мир.`);
     } catch (failure) { setWorldWatchId(null); setLanPort(''); setWorldError(String(failure)); }
     finally { setBusy(false); }
   }
@@ -171,7 +226,7 @@ function App() {
     try {
       const port = Number(lanPort);
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Укажите порт от 1 до 65535.');
-      setSession(await invoke<Session>('host', { target: `127.0.0.1:${port}`, relay: direct ? null : relay.trim() || null, worldWatchId, direct }));
+      setSession(await invoke<Session>('host', { target: `127.0.0.1:${port}`, relay: direct ? null : relay.trim() || null, worldWatchId, direct, label: announced?.name ?? null }));
       window.setTimeout(() => sessionRef.current?.scrollIntoView({ behavior: 'auto' }), 100);
       // One click: the first friend's invitation is ready, and copied, as soon as the connection is.
       let created: CodeStatus | null = null;
@@ -188,6 +243,21 @@ function App() {
     finally { setBusy(false); }
   }
 
+  // Works in any version: the saved server points at the guest's fixed address.
+  async function addServerEntry() {
+    setBusy(true); setError(''); setServerEntry('');
+    try {
+      const result = await invoke<{ added: number; present: number; failed: number }>('add_server_entry');
+      const failed = result.failed ? ` В ${result.failed} папк${result.failed === 1 ? 'е' : 'ах'} список серверов прочитать не удалось.` : '';
+      setServerEntry((result.added > 0
+        ? 'Готово: в «Сетевой игре» появился сервер «BlockOps — мир друга». Если этот экран уже открыт, вернитесь в меню и откройте его снова.'
+        : result.present > 0 ? 'Сервер «BlockOps — мир друга» уже есть в «Сетевой игре».'
+        : 'Папка Minecraft не найдена. Добавьте сервер вручную с адресом выше.') + failed);
+      setReadinessRevision(value => value + 1);
+    } catch (failure) { setError(String(failure)); }
+    finally { setBusy(false); }
+  }
+
   async function joinMinecraft(pairingCode: string | null) {
     setPairingCode(''); setBusy(true); setError(''); setJoinFeedback('');
     try {
@@ -200,7 +270,7 @@ function App() {
   async function stop() {
     setBusy(true);
     setError('');
-    try { await invoke('stop'); setSession(null); setInviteNotice(''); setPairingCode(''); setHostPairingCode(''); setWorldWatchId(null); setLanPort(''); setWorldFeedback(''); setJoinFeedback(''); }
+    try { await invoke('stop'); setSession(null); setInviteNotice(''); setServerEntry(''); setPairingCode(''); setHostPairingCode(''); setWorldWatchId(null); setLanPort(''); setWorldFeedback(''); setJoinFeedback(''); }
     catch (e) { setError(explainError(e)); }
     finally { setBusy(false); }
   }
@@ -210,11 +280,16 @@ function App() {
     catch { return true; }
   })();
   const needsPublicServices = !direct && (coordinatorIsLocal || (mode === 'host' && !relay.trim()));
-  const hostHint = !local || worldWatchId !== null ? 'С модом BlockOps приложение само найдёт открытый мир на этом компьютере и его порт.'
-    : local.running === 0 ? 'Запустите Minecraft с модом BlockOps и откройте мир для сети: BlockOps найдёт его сам. Мод можно установить в разделе «Найти мою сборку Minecraft».'
-    : local.open_worlds === 0 ? 'Minecraft запущен. Откройте мир для сети: BlockOps найдёт его сам.'
-    : 'Найден открытый для сети мир.';
-  const guestHint = !local ? 'С экспериментальным модом Fabric 1.21.1 откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.'
+  const announced = local?.lan_worlds?.[0];
+  const hostHint = !local || worldWatchId !== null ? 'BlockOps сам найдёт открытый для сети мир на этом компьютере в любой версии Minecraft Java.'
+    : local.open_worlds > 0 ? `Найден открытый для сети мир${announced ? ` ${describeWorld(announced.name, announced.version)}` : ''}.`
+    : local.running > 0 ? 'Minecraft запущен. Откройте мир для сети: BlockOps найдёт его сам.'
+    : 'Откройте мир в Minecraft и нажмите «Открыть для сети»: BlockOps найдёт его сам, в любой версии.';
+  const world: WorldReadiness = session?.mode === 'host' ? { found: true, label: '', hosting: true }
+    : worldWatchId !== null ? { found: true, label: describeWorld(announced?.name, announced?.version), hosting: false }
+    : local ? { found: local.open_worlds > 0, label: describeWorld(announced?.name, announced?.version), hosting: false }
+    : null;
+  const guestHint = !local ? 'С модом BlockOps откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.'
     : local.running === 0 ? 'Запустите Minecraft с модом BlockOps: в главном меню игра сама подключится к миру друга. Мод можно установить в разделе «Найти мою сборку Minecraft».'
     : local.in_menu > 1 ? 'Запущено несколько копий Minecraft с модом BlockOps. Оставьте одну или войдите по коду мода.'
     : local.in_menu === 0 ? 'Откройте главное меню Minecraft: игра сама подключится к миру друга.'
@@ -267,34 +342,47 @@ function App() {
           {session && <p>Чтобы открыть другой мир, сначала отключите текущее соединение.</p>}
         </form>
       </section>
+      {direct && <HostFriends desktop={desktop} revision={friendsRevision}/>}
       <details className="managed-servers"><summary>Отдельные серверы BlockOps</summary><Servers desktop={desktop} relay={direct ? '' : relay} direct={direct} createSignal={0} onInvite={() => void refreshSession()}/></details>
     </div>
     {mode === 'join' && !session && <form className="card join-card" onSubmit={e => { e.preventDefault(); void join(invite.trim()); }}>
 
         <h2>Войдите в мир друга</h2>
+        <FriendWorlds desktop={desktop} busy={busy} onJoin={host => void joinFriend(host)}/>
+        {searchingFriend && <p role="status">Ищем мир друга в сети, это до минуты…</p>}
         <p>Скопируйте приглашение от друга и вставьте его сюда целиком: BlockOps найдёт код и подключится сам. Код можно ввести и вручную.</p>
         <label htmlFor="invite">Приглашение или код</label>
         <input id="invite" required maxLength={32} autoComplete="off" spellCheck={false} value={invite} onChange={e => setInvite(e.target.value)} onPaste={pasteInvitation} placeholder="Приглашение от друга или код" />
         <p>Код можно использовать один раз. После перезапуска BlockOps потребуется новый.</p>
         <button className="primary" disabled={!desktop || busy || !invite.trim()}>{busy ? 'Подготавливаем подключение…' : 'Подключиться'}</button>
       </form>}
-    </div><aside className="guide" aria-label="Как начать">
+    </div><div className="side"><Readiness desktop={desktop} mode={mode} world={world} revision={readinessRevision}/><aside className="guide" aria-label="Как начать">
       <h2>{mode === 'host' ? 'Как начать' : 'Как присоединиться'}</h2>
-      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>С модом BlockOps мир найдётся сам; без мода укажите порт.</span></li><li><strong>Пригласите друга</strong><span>Нажмите «Пригласить друга» и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите приглашение</strong><span>Друг пришлёт его в мессенджере.</span></li><li><strong>Вставьте его целиком</strong><span>BlockOps найдёт код и подключится сам.</span></li><li><strong>Откройте Minecraft</strong><span>С модом BlockOps игра подключится сама; без мода добавьте адрес в сетевой игре.</span></li></ol>}
-    </aside></div>
+      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>BlockOps найдёт мир сам, в любой версии Minecraft Java.</span></li><li><strong>Пригласите друга</strong><span>Нажмите «Пригласить друга» и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите приглашение</strong><span>Друг пришлёт его в мессенджере.</span></li><li><strong>Вставьте его целиком</strong><span>BlockOps найдёт код и подключится сам.</span></li><li><strong>Откройте Minecraft</strong><span>С модом BlockOps игра подключится сама; без мода выберите сервер «BlockOps» в «Сетевой игре».</span></li></ol>}
+    </aside></div></div>
 
     {session && mode !== session.mode && <p className="notice">Активное соединение останется открытым. Чтобы создать новое, сначала отключите текущее.</p>}
     {session && <section className="card session-card" ref={sessionRef} aria-live="polite">
       {session.mode === 'host' ? <>
         <h2>Пригласите друзей</h2>
         <p>Соединение подготовлено. Доступность мира проверяется при подключении игрока. Создайте отдельный код для каждого друга и не публикуйте его.</p>
+        <div className="players" aria-label="Игроки в мире">
+          <h3>{session.players?.length ? `В мире: ${session.players.length}` : 'В мире пока никого'}</h3>
+          {session.players?.length ? <ul>{session.players.map(player => <li key={player.id}>
+            <strong>{playerName(player)}</strong>
+            <span>{player.rtt_ms != null ? `пинг ${describePing(player.rtt_ms)}` : 'пинг измеряется…'}</span>
+          </li>)}</ul> : <p>Когда друг зайдёт в мир, BlockOps покажет его здесь и сообщит уведомлением.</p>}
+        </div>
         {inviteNotice && <p role="status" className="success">{inviteNotice}</p>}
-        <Codes coordinator={coordinator.trim()} direct={direct}/>
+        <Codes coordinator={coordinator.trim()} direct={direct} onFriendsChanged={() => setFriendsRevision(value => value + 1)}/>
       </> : <>
         <h2>Откройте Minecraft</h2>
-        <p role="status">{session.transport === 'direct' ? 'Соединение с другом установлено напрямую.' : session.transport === 'relay' ? 'Соединение с другом установлено через relay.' : 'Устанавливаем соединение с другом…'}</p>
+        <p role="status">{session.transport === 'direct' ? 'Соединение с другом установлено напрямую.' : session.transport === 'relay' ? 'Соединение с другом установлено через relay.' : 'Устанавливаем соединение с другом…'}{session.transport && session.rtt_ms != null ? ` Пинг: ${describePing(session.rtt_ms)}.` : ''}</p>
         {session.endpoint && <><label>Адрес сервера для Minecraft</label><code className="endpoint">{session.endpoint}</code></>}
-        <p>В Minecraft Java откройте «Сетевая игра», добавьте сервер и вставьте этот адрес. Доступность мира проверяется при подключении Minecraft.</p>
+        {session.endpoint && session.endpoint !== GUEST_ADDRESS && <p className="notice">Постоянный адрес {GUEST_ADDRESS} занят другой программой, поэтому сейчас адрес другой. Сохранённый сервер BlockOps заработает, когда адрес освободится.</p>}
+        <p>В любой версии Minecraft Java: откройте «Сетевая игра» и выберите сервер «BlockOps — мир друга». Адрес постоянный, поэтому сервер достаточно добавить один раз.</p>
+        <button type="button" disabled={!desktop || busy} onClick={() => void addServerEntry()}>Добавить сервер в Minecraft</button>
+        {serverEntry && <p role="status">{serverEntry}</p>}
         <div className="minecraft-join">
           <h3>Войти через мод BlockOps</h3>
           <p>{guestHint}</p>
@@ -342,6 +430,7 @@ function App() {
 
 
     {error && <p role="alert" className="error">{error}</p>}
+    {arrivals.length > 0 && <div className="toasts" role="status">{arrivals.map((text, index) => <p key={`${index}-${text}`}>{text}</p>)}</div>}
     <footer><span>BlockOps</span><span>Сделано для совместной игры</span></footer>
   </main>;
 }

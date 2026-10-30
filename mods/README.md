@@ -1,10 +1,28 @@
-# BlockOps Client: Fabric 1.21.1 prototype
+# BlockOps Client mod
 
-This is a client-only Fabric mod for Minecraft Java **1.21.1**, Java 21 and Fabric Loader
-0.16.10 or newer. It needs nothing else: the three Fabric API modules it uses
-(`fabric-api-base`, `fabric-command-api-v2`, `fabric-lifecycle-events-v1`, Apache-2.0, each with
-its license) are nested in the jar, and a separately installed, newer Fabric API takes
-precedence. No Minecraft binaries are included in this repository or distributed inside the mod.
+A client-only companion for the BlockOps desktop, built for the most used Minecraft Java
+versions and loaders:
+
+| Build | Minecraft | Loader | Java | Folder |
+|---|---|---|---|---|
+| Fabric 1.21.1 | 1.21.1 | Fabric Loader 0.16.10+ | 21 | `fabric-1.21.1` |
+| Fabric 1.20.1 | 1.20.1 | Fabric Loader 0.16.10+ | 17 | `fabric-1.20.1` |
+| NeoForge 1.21.1 | 1.21.1 | NeoForge 21.1+ | 21 | `neoforge-1.21.1` |
+| Forge 1.20.1 | 1.20.1 | Forge 47+ | 17 | `forge-1.20.1` |
+
+The bridge, its protocol, the discovery publisher and the private Windows descriptor live
+once in `common` and are compiled into every build; each folder adds only a thin layer of game
+hooks with that version's names and events. Every jar names its target in `blockops.json`,
+which the desktop uses to pick the right jar and to recognise its own files. The Fabric builds
+nest the three Fabric API modules they use (`fabric-api-base`, `fabric-command-api-v2`,
+`fabric-lifecycle-events-v1`, Apache-2.0, each with its license), so they need nothing but
+Fabric Loader; a separately installed, newer Fabric API takes precedence. Forge and NeoForge
+provide their APIs themselves. No Minecraft binaries are included in this repository or
+distributed inside the mod.
+
+Without any mod, BlockOps still finds a world opened to LAN in every version from its LAN
+announcement, and a guest joins through the saved "BlockOps" server; the mod adds joining
+without a click and the authenticated port.
 
 On Windows the mod advertises a one-use local bridge through a private descriptor, so the
 BlockOps desktop on the same computer finds it without a copied code (see below). The mod also
@@ -19,13 +37,13 @@ real Minecraft client.
 
 ## Installation by the desktop
 
-The Windows installer of BlockOps carries this jar. In **Найти мою сборку Minecraft** the
-desktop offers to install, update or remove it for an official Minecraft Launcher profile, and
-writes only after the player confirms. It re-reads the launcher profiles itself and requires
-that a complete Fabric 1.21.1 profile runs from the chosen game folder and that every other
-profile running from that folder is Fabric 1.21.1 or Vanilla: the mod's `minecraft = 1.21.1`
-dependency would stop a Fabric profile of another version from starting. It recognises its own
-jars by the `blockops` id in `fabric.mod.json`, writes under a hidden temporary name, removes
+The Windows installer of BlockOps carries every build. In **Найти мою сборку Minecraft** the
+desktop offers to install, update or remove the matching one for an official Minecraft Launcher
+profile, and writes only after the player confirms. It re-reads the launcher profiles itself
+and requires that a complete profile of a supported build runs from the chosen game folder and
+that every other profile running from that folder is the same build or Vanilla: the mod's
+Minecraft dependency would stop another version from starting. It recognises its own jars by
+`blockops.json` (or the `blockops` id in `fabric.mod.json` for earlier jars), writes under a hidden temporary name, removes
 older copies and renames the new file into `mods`; other files are never touched. If the
 mod's file name is taken by a file not verified as BlockOps, it refuses without changing anything. A file held
 open by a running game is reported instead of half-replaced. Other launchers are not supported
@@ -33,11 +51,13 @@ yet; their users can copy the jar into `mods` manually.
 
 ## Build
 
-Run `./gradlew build` (Windows: `gradlew.bat build`) from this directory with JDK 21.
-The checked-in Gradle wrapper verifies the Gradle distribution SHA-256. The build fetches
-Minecraft, mappings and Fabric dependencies from their official repositories. Its output is
-`build/libs/blockops-fabric-client-0.1.0.jar`. GitHub Actions builds and archives this JAR.
-Building it does not establish that it works in a real Minecraft client.
+From this directory, with JDK 21, run `./gradlew -p <folder> build` (Windows:
+`gradlew.bat -p <folder> build`), for example `./gradlew -p neoforge-1.21.1 build`. The shared
+checked-in Gradle wrapper verifies the Gradle distribution SHA-256. Each build fetches
+Minecraft, mappings and its loader from their official repositories and writes
+`<folder>/build/libs/blockops-<folder>-0.1.0.jar`. The shared checks run with the
+`fabric-1.21.1` build. GitHub Actions builds every target and bundles the jars into the
+Windows installer. Building a jar does not establish that it works in a real Minecraft client.
 
 ## Automatic discovery (Windows)
 

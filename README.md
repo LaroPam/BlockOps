@@ -9,7 +9,7 @@ an encrypted application-level TCP tunnel. **Iteration 3: Vanilla manager, ident
 - [Architecture, feasibility, trust boundaries and roadmap](docs/architecture.md)
 - [Connecting an existing Minecraft world](docs/lan-world.md)
 - [Discovering Minecraft profiles](docs/minecraft-profiles.md)
-- [Experimental Fabric client mod](mods/fabric-1.21.1/README.md)
+- [Experimental client mod for Fabric, Forge and NeoForge](mods/README.md)
 - [Local verification and Windows desktop](docs/development.md)
 - [Windows preview installation and test guide](docs/windows-test.md)
 - [Public relay deployment and traffic limits](docs/relay.md)
@@ -37,7 +37,9 @@ check additionally starts **two CLI client processes** and a relay process.
 
 ## Included
 
-- Vanilla 1.21.1 and 1.21.4 manager: official verified JAR/Java downloads, explicit EULA acceptance,
+- Vanilla manager for 26.3, 1.21.11, 1.21.4, 1.21.1, 1.20.4, 1.20.1, 1.19.2, 1.18.2, 1.16.5 and
+  1.12.2: official verified JAR downloads with the matching Java 8/17/21/25, Log4Shell-safe logging
+  for the old releases, explicit EULA acceptance,
   SQLite registry, isolated worlds, safe settings, process supervisor and local command console.
 - Serverless mode by default: players meet through the public libp2p (IPFS) network, prove a
   one-use 80-bit code with SPAKE2 bound to their peer ids, and play over a hole-punched direct
@@ -52,16 +54,30 @@ check additionally starts **two CLI client processes** and a relay process.
 - Standalone circuit relay v2, persistent optional identity, configurable traffic limits.
 - UI to start/stop sessions, exchange a secret invitation, obtain a local Minecraft address,
   and inspect actual connection counts, observed guest transport and last errors.
-- Experimental Fabric 1.21.1 companion: on Windows the desktop notices an opened LAN world by itself,
-  one click prepares the connection and a copyable code, and the guest's Minecraft joins once it
+- Worlds opened to LAN are found automatically in any Minecraft Java version, from the game's own
+  LAN announcement (accepted only from this computer), with name and version from a status ping;
+  the tunnel stops once the announcements stop.
+- Guests use a fixed local address, and one click saves it as a server in Minecraft's own list
+  (servers.dat, edited without touching other entries), so joining takes two clicks in any version.
+- Experimental companion mod for Fabric 1.21.1 and 1.20.1, NeoForge 1.21.1 and Forge 1.20.1: on
+  Windows the desktop gets the world's port from it, and the guest's Minecraft joins once it
   reaches the main menu. It works through an owner-only descriptor and an HMAC-authenticated one-use
-  local bridge; a manually copied code remains as a fallback. The installer carries the mod, which
-  needs only Fabric Loader, and the desktop installs it into a Fabric 1.21.1 launcher profile after
-  the player confirms.
+  local bridge; a manually copied code remains as a fallback. The installer carries every build, and
+  the desktop installs the right one into a launcher profile after the player confirms.
+- The host sees who is in the world, by the name the game logs in with, and each friend's ping;
+  a notice (a Windows notification when BlockOps is in the background) tells when friends come
+  and go. Server list pings are not counted. Guests see their ping to the host.
+- Remembered friends: after a first visit by code the host can let a friend in without codes; the
+  friend enters with one click while the world is open. Access is bound to the friend's own key,
+  found through a secret meeting point in the DHT, and revoked at once by «Забыть».
+- Closing while friends play, a guest is connected or a server runs asks first and can keep
+  BlockOps running in the tray; starting it again opens the running copy.
+- A «Готовность к игре» panel shows at a glance whether Minecraft was found, whether the world is
+  open (host) or the server is in Minecraft's list (guest), and the mod, with one-click fixes.
 
 ## Not included yet
 
-Other Minecraft versions/loaders, automatic backups, accounts,
+Loaders on BlockOps-managed servers, automatic backups, accounts,
 reliable NAT test matrix, automatic reconnect and signed installers. Nothing disables `online-mode` or opens router ports. Internet play
 works directly when hole punching succeeds; otherwise it needs an explicitly configured, reachable relay. The desktop uses per-member identity-bound codes. Legacy blockops-tunnel CLI JSON invites
 remain bearer secrets and are intended only for PoC compatibility.
