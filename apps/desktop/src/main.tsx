@@ -6,6 +6,7 @@ import { Servers } from './Servers';
 import { Codes } from './Codes';
 import { MinecraftProfiles } from './MinecraftProfiles';
 import { Readiness, type WorldReadiness } from './Readiness';
+import { FriendWorlds, HostFriends } from './Friends';
 import { explainError } from './errors';
 import { findCode, invitationText, type CodeStatus } from './invite';
 
@@ -82,6 +83,8 @@ function App() {
   const [local, setLocal] = useState<LocalMinecraft | null>(null);
   const [readinessRevision, setReadinessRevision] = useState(0);
   const [arrivals, setArrivals] = useState<string[]>([]);
+  const [friendsRevision, setFriendsRevision] = useState(0);
+  const [searchingFriend, setSearchingFriend] = useState(false);
   const knownPlayers = useRef<Player[] | null>(null);
   const autoDetectTried = useRef(false);
   const autoJoinTried = useRef(false);
@@ -186,6 +189,15 @@ function App() {
     finally { setBusy(false); }
   }
 
+  // A remembered world needs no code; finding the friend in the network takes up to a minute.
+  async function joinFriend(host: string) {
+    setBusy(true); setSearchingFriend(true);
+    setError('');
+    try { setSession(await invoke<Session>('join_friend', { host })); }
+    catch (e) { setError(explainError(e)); }
+    finally { setBusy(false); setSearchingFriend(false); }
+  }
+
   // A whole pasted invitation is reduced to its code and connects at once.
   function pasteInvitation(e: React.ClipboardEvent<HTMLInputElement>) {
     const code = findCode(e.clipboardData.getData('text'));
@@ -214,7 +226,7 @@ function App() {
     try {
       const port = Number(lanPort);
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Укажите порт от 1 до 65535.');
-      setSession(await invoke<Session>('host', { target: `127.0.0.1:${port}`, relay: direct ? null : relay.trim() || null, worldWatchId, direct }));
+      setSession(await invoke<Session>('host', { target: `127.0.0.1:${port}`, relay: direct ? null : relay.trim() || null, worldWatchId, direct, label: announced?.name ?? null }));
       window.setTimeout(() => sessionRef.current?.scrollIntoView({ behavior: 'auto' }), 100);
       // One click: the first friend's invitation is ready, and copied, as soon as the connection is.
       let created: CodeStatus | null = null;
@@ -330,11 +342,14 @@ function App() {
           {session && <p>Чтобы открыть другой мир, сначала отключите текущее соединение.</p>}
         </form>
       </section>
+      {direct && <HostFriends desktop={desktop} revision={friendsRevision}/>}
       <details className="managed-servers"><summary>Отдельные серверы BlockOps</summary><Servers desktop={desktop} relay={direct ? '' : relay} direct={direct} createSignal={0} onInvite={() => void refreshSession()}/></details>
     </div>
     {mode === 'join' && !session && <form className="card join-card" onSubmit={e => { e.preventDefault(); void join(invite.trim()); }}>
 
         <h2>Войдите в мир друга</h2>
+        <FriendWorlds desktop={desktop} busy={busy} onJoin={host => void joinFriend(host)}/>
+        {searchingFriend && <p role="status">Ищем мир друга в сети, это до минуты…</p>}
         <p>Скопируйте приглашение от друга и вставьте его сюда целиком: BlockOps найдёт код и подключится сам. Код можно ввести и вручную.</p>
         <label htmlFor="invite">Приглашение или код</label>
         <input id="invite" required maxLength={32} autoComplete="off" spellCheck={false} value={invite} onChange={e => setInvite(e.target.value)} onPaste={pasteInvitation} placeholder="Приглашение от друга или код" />
@@ -359,7 +374,7 @@ function App() {
           </li>)}</ul> : <p>Когда друг зайдёт в мир, BlockOps покажет его здесь и сообщит уведомлением.</p>}
         </div>
         {inviteNotice && <p role="status" className="success">{inviteNotice}</p>}
-        <Codes coordinator={coordinator.trim()} direct={direct}/>
+        <Codes coordinator={coordinator.trim()} direct={direct} onFriendsChanged={() => setFriendsRevision(value => value + 1)}/>
       </> : <>
         <h2>Откройте Minecraft</h2>
         <p role="status">{session.transport === 'direct' ? 'Соединение с другом установлено напрямую.' : session.transport === 'relay' ? 'Соединение с другом установлено через relay.' : 'Устанавливаем соединение с другом…'}{session.transport && session.rtt_ms != null ? ` Пинг: ${describePing(session.rtt_ms)}.` : ''}</p>

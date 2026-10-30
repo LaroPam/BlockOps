@@ -244,3 +244,15 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .players p { margin: 8px 0 0; font-size: 13px; }
 .toasts { position: fixed; right: 16px; bottom: 16px; left: 16px; display: grid; justify-items: end; gap: 8px; pointer-events: none; z-index: 10; }
 .toasts p { margin: 0; max-width: 360px; padding: 12px 16px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface-raised); color: var(--text); box-shadow: 0 6px 24px rgb(0 0 0 / .35); }
+
+/* Friends who come in without a code, and worlds to enter again. */
+.friends-panel { margin-top: 20px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 0 2px 8px; }
+.friend-worlds { margin: 16px 0 20px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.friend-worlds h3 { margin: 0; font-size: 15px; }
+.friend-worlds p { margin: 6px 0 0; font-size: 13px; }
+.friend-list { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 10px; }
+.friend-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.friend-list li > span:first-child { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.friend-list small { color: var(--muted); font-size: 12px; }
+.friend-actions { display: flex; gap: 8px; }
+.friend-list button { min-height: 36px; padding: 8px 12px; }

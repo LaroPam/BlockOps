@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod friends;
 mod servers;
 use blockops_tunnel::Session;
 use serde::Serialize;
@@ -143,32 +144,34 @@ fn notify_players(
 #[tauri::command]
 async fn host(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
     world_watch_id: Option<u64>,
     direct: Option<bool>,
+    label: Option<String>,
 ) -> Result<View, String> {
     make_host(
         app,
-        state,
         target,
         relay,
         None,
         world_watch_id,
         direct.unwrap_or(false),
+        label.unwrap_or_default(),
     )
     .await
 }
+/// `label` names the world for friends who remember it, e.g. "Steve - New World".
 async fn make_host(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
     owner: Option<String>,
     world_watch_id: Option<u64>,
     direct: bool,
+    label: String,
 ) -> Result<View, String> {
+    let state = app.state::<AppState>();
     if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
@@ -202,10 +205,27 @@ async fn make_host(
     // Joining the public network takes up to a minute; the status lock is not held meanwhile.
     let lifetime = std::time::Duration::from_secs(3600);
     let session = if direct {
+        // A damaged friends book must not stop the game: then this session remembers no one.
+        let identity = match app
+            .state::<friends::Friends>()
+            .read()
+            .await
+            .and_then(|book| {
+                Ok(blockops_tunnel::direct::HostIdentity {
+                    key: book.keypair().map_err(|e| e.to_string())?,
+                    meeting: book.meeting().map_err(|e| e.to_string())?,
+                    label: label.clone(),
+                    friends: book.friend_grants(),
+                })
+            }) {
+            Ok(identity) => identity,
+            Err(_) => blockops_tunnel::direct::HostIdentity::ephemeral(&label),
+        };
         blockops_tunnel::direct::host_direct(
             target,
             blockops_tunnel::direct::Network::public(),
             lifetime,
+            identity,
         )
         .await
     } else {
@@ -243,7 +263,7 @@ async fn make_host(
         }
     }
     let result = view("host", &session);
-    notify_players(app, session.status.clone());
+    notify_players(app.clone(), session.status.clone());
     let owner = world_watch_id
         .map(|id| format!("world-watch:{id}"))
         .or(owner);
@@ -341,30 +361,80 @@ async fn revoke_code(state: State<'_, AppState>, id: String) -> Result<(), Strin
 }
 #[tauri::command]
 async fn join_code(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     coordinator: String,
     code: String,
 ) -> Result<View, String> {
+    // A four-group code was announced on the public network; others come from a coordinator.
+    if blockops_tunnel::pake::is_direct_code(&code) {
+        return join_serverless(&app, blockops_tunnel::direct::Ticket::Code(code)).await;
+    }
     if state.0.lock().await.is_some() {
         return Err("Сначала остановите текущую сессию".into());
     }
     state.2.lock().await.take();
     let listener = guest_listener().await?;
-    // A four-group code was announced on the public network; others come from a coordinator.
-    let session = if blockops_tunnel::pake::is_direct_code(&code) {
-        blockops_tunnel::direct::join_direct(
-            &code,
-            listener,
-            blockops_tunnel::direct::Network::public(),
-        )
+    let session = blockops_coordination::client::Client::new(&coordinator)
+        .map_err(|e| e.to_string())?
+        .join_on(&code, listener)
         .await
-    } else {
-        blockops_coordination::client::Client::new(&coordinator)
-            .map_err(|e| e.to_string())?
-            .join_on(&code, listener)
-            .await
+        .map_err(|e| e.to_string())?;
+    keep_guest_session(&state, session).await
+}
+
+/// Enter a remembered friend's world without a code.
+#[tauri::command]
+async fn join_friend(app: tauri::AppHandle, host: String) -> Result<View, String> {
+    let world = app
+        .state::<friends::Friends>()
+        .read()
+        .await?
+        .world(&host)
+        .map_err(|e| e.to_string())?;
+    join_serverless(&app, blockops_tunnel::direct::Ticket::Friend(world)).await
+}
+
+/// Join through the public network with this computer's lasting key, and keep the world
+/// the host shared so the next visit needs no code.
+async fn join_serverless(
+    app: &tauri::AppHandle,
+    ticket: blockops_tunnel::direct::Ticket,
+) -> Result<View, String> {
+    let state = app.state::<AppState>();
+    if state.0.lock().await.is_some() {
+        return Err("Сначала остановите текущую сессию".into());
     }
+    state.2.lock().await.take();
+    let friends = app.state::<friends::Friends>();
+    let key = friends
+        .read()
+        .await
+        .and_then(|book| book.keypair().map_err(|e| e.to_string()))
+        // Without a readable friends book this visit uses a one-off key.
+        .unwrap_or_else(|_| blockops_tunnel::direct::HostIdentity::ephemeral("").key);
+    let listener = guest_listener().await?;
+    let session = blockops_tunnel::direct::join_direct(
+        ticket,
+        listener,
+        blockops_tunnel::direct::Network::public(),
+        key,
+    )
+    .await
     .map_err(|e| e.to_string())?;
+    if let Some(world) = &session.world {
+        // Not remembering only costs a code next time.
+        let _ = friends
+            .change(|book| {
+                book.remember_world(world);
+                Ok(())
+            })
+            .await;
+    }
+    keep_guest_session(&state, session).await
+}
+
+async fn keep_guest_session(state: &State<'_, AppState>, session: Session) -> Result<View, String> {
     let mut guard = state.0.lock().await;
     if guard.is_some() {
         session.stop().await;
@@ -1078,7 +1148,9 @@ fn main() {
             Mutex::new(None),
         ))
         .setup(|app| {
-            let manager = blockops_server_manager::Manager::open(app.path().app_data_dir()?)?;
+            let data = app.path().app_data_dir()?;
+            app.manage(friends::Friends(Mutex::new(data.join("friends.json"))));
+            let manager = blockops_server_manager::Manager::open(data)?;
             app.manage(servers::Servers {
                 manager,
                 processes: Mutex::new(std::collections::HashMap::new()),
@@ -1125,6 +1197,11 @@ fn main() {
             codes,
             revoke_code,
             join_code,
+            join_friend,
+            friends::friends,
+            friends::remember_friend,
+            friends::forget_friend,
+            friends::forget_world,
             join_in_minecraft,
             detect_open_world,
             world_watch_alive,

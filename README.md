@@ -67,6 +67,9 @@ check additionally starts **two CLI client processes** and a relay process.
 - The host sees who is in the world, by the name the game logs in with, and each friend's ping;
   a notice (a Windows notification when BlockOps is in the background) tells when friends come
   and go. Server list pings are not counted. Guests see their ping to the host.
+- Remembered friends: after a first visit by code the host can let a friend in without codes; the
+  friend enters with one click while the world is open. Access is bound to the friend's own key,
+  found through a secret meeting point in the DHT, and revoked at once by «Забыть».
 - Closing while friends play, a guest is connected or a server runs asks first and can keep
   BlockOps running in the tray; starting it again opens the running copy.
 - A «Готовность к игре» panel shows at a glance whether Minecraft was found, whether the world is

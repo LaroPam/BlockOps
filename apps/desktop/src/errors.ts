@@ -9,6 +9,8 @@ export function explainError(error: unknown): string {
     return 'Некорректный адрес сервиса координации. Укажите его без пути и параметров, например https://connect.example.org.';
   }
   if (message.includes('No relay of the public network accepted a reservation')) return 'Не удалось подключиться к публичной сети. Проверьте доступ в интернет и повторите; если не поможет, понадобится свой relay-сервер.';
+  if (message.includes('no longer lets this computer in')) return 'Друг больше не впускает вас без кода. Попросите у него новый код.';
+  if (message.includes("The friend's world was not found")) return 'Мир друга сейчас не найден в сети. Попросите друга открыть мир и нажать «Пригласить друга», затем попробуйте снова.';
   if (message.includes('No host with this code was found')) return 'Друг с таким кодом не найден в сети. Проверьте код: у друга BlockOps должен быть открыт, а код ещё не использован.';
   if (message.includes('does not match this host') || message.includes('The host refused access')) return 'Код не подошёл. Попросите друга создать новый.';
   if (message.includes('Direct connection failed')) return 'Не удалось соединиться с другом напрямую: ваши сети этого не позволяют. Так бывает с мобильным интернетом и у некоторых провайдеров; для таких случаев понадобится свой relay-сервер.';

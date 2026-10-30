@@ -476,6 +476,71 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     await party.locator('.toasts').waitFor({ state: 'detached', timeout: 25000 });
     assert.equal(await players.getByText('В мире: 1').count(), 1);
     await party.close();
+
+    // A friend who came in by code can be remembered, and forgotten again.
+    const keeper = await browser.newPage();
+    await keeper.addInitScript(() => {
+      window.__book = { friends: [], worlds: [] };
+      window.__friendCalls = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'status') return { mode: 'host', endpoint: null, active_connections: 1, last_error: null, transport: null, players: [], rtt_ms: null };
+        if (command === 'codes') return [{ id: 'c1', code: 'ABCD-EFGH-JKMN-PQRS', expires_at: 4102444800, phase: 'active', peer: '12D3KooWFriend', error: null }];
+        if (command === 'friends') return window.__book;
+        if (command === 'remember_friend') {
+          window.__friendCalls.push([command, args]);
+          window.__book = { ...window.__book, friends: [{ peer: '12D3KooWFriend', name: 'Steve', added: 1767225600 }] };
+          return window.__book;
+        }
+        if (command === 'forget_friend') {
+          window.__friendCalls.push([command, args]);
+          window.__book = { ...window.__book, friends: [] };
+          return window.__book;
+        }
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await keeper.goto(baseUrl);
+    await keeper.getByRole('button', { name: 'Запомнить друга — пускать без кода' }).click();
+    await keeper.getByText('Друг запомнен: в следующий раз он войдёт без кода.').waitFor();
+    await keeper.getByText('Друзья, которые заходят без кода (1)').click();
+    await keeper.locator('.friends-panel').getByText('Steve', { exact: true }).waitFor();
+    await keeper.locator('.friends-panel').getByRole('button', { name: 'Забыть' }).click();
+    await keeper.getByText('Друзья, которые заходят без кода (0)').waitFor();
+    assert.deepEqual(await keeper.evaluate(() => window.__friendCalls), [
+      ['remember_friend', { id: 'c1' }],
+      ['forget_friend', { peer: '12D3KooWFriend' }],
+    ]);
+    await keeper.close();
+
+    // A guest enters a remembered world with one click, or learns why not.
+    const visitor = await browser.newPage();
+    await visitor.addInitScript(() => {
+      window.__session = null;
+      window.__joins = [];
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'friends') return { friends: [], worlds: [{ host: '12D3KooWHost', label: 'Alex - World', added: 1767225600 }] };
+        if (command === 'join_friend') {
+          window.__joins.push(args);
+          if (window.__joins.length === 1) throw "The friend's world was not found";
+          window.__session = { mode: 'join', endpoint: '127.0.0.1:25595', active_connections: 0, last_error: null, transport: 'direct', players: [], rtt_ms: 40 };
+          return window.__session;
+        }
+        if (command === 'status') return window.__session;
+        if (command === 'servers') return [];
+        return null;
+      }};
+    });
+    await visitor.goto(baseUrl);
+    await visitor.getByRole('button', { name: /Присоединиться/ }).click();
+    const worlds = visitor.getByLabel('Миры друзей');
+    await worlds.getByText('Alex - World').waitFor();
+    await worlds.getByRole('button', { name: 'Войти' }).click();
+    await visitor.getByText(/Мир друга сейчас не найден в сети/).waitFor();
+    await worlds.getByRole('button', { name: 'Войти' }).click();
+    await visitor.getByText('Соединение с другом установлено напрямую. Пинг: 40 мс.').waitFor();
+    assert.deepEqual(await visitor.evaluate(() => window.__joins), [{ host: '12D3KooWHost' }, { host: '12D3KooWHost' }]);
+    await visitor.close();
   } finally {
     if (browser) await browser.close();
     server.kill();

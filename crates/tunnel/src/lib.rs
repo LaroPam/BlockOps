@@ -1,5 +1,6 @@
 pub mod access;
 pub mod direct;
+pub mod friends;
 pub mod minecraft;
 pub mod pake;
 // Capability-gated, single-target TCP tunnel over authenticated libp2p streams.
@@ -140,6 +141,7 @@ impl Roster {
             RosterEvent::Joined { id, peer, name } => {
                 let player = Player {
                     id,
+                    peer: peer.to_string(),
                     name,
                     since: now(),
                     rtt_ms: None,
@@ -285,6 +287,8 @@ impl Invite {
 pub struct Player {
     /// Unique among the players of this application run.
     pub id: u64,
+    /// The friend's computer, which a host may remember to let in without a code.
+    pub peer: String,
     /// The name the game logged in with, when it is a valid Minecraft name.
     pub name: Option<String>,
     /// When the player joined, in seconds since the Unix epoch.
@@ -313,6 +317,8 @@ pub struct Session {
     access: Option<access::Access>,
     /// Issues codes on a serverless host.
     direct: Option<tokio::sync::mpsc::Sender<direct::Command>>,
+    /// Guest: how to come back to this world without a code, when the host shared it.
+    pub world: Option<direct::FriendWorld>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -456,6 +462,7 @@ async fn host_inner(
         task: Some(task),
         access,
         direct: None,
+        world: None,
     };
     let address = tokio::time::timeout(TIMEOUT, ready_rx)
         .await
@@ -546,5 +553,6 @@ pub async fn join_with_listener(
         task: Some(task),
         access: None,
         direct: None,
+        world: None,
     })
 }
