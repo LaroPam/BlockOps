@@ -284,6 +284,8 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     assert.equal(await guest.evaluate(() => window.__joins.length), 0, 'joined before the route was ready');
     await guest.evaluate(() => { window.__session = { ...window.__session, transport: 'direct' }; });
     await guest.getByText('Соединение с другом установлено напрямую.').waitFor();
+    await guest.evaluate(() => { window.__session = { ...window.__session, rtt_ms: 120 }; });
+    await guest.getByText(/Пинг: 120 мс, терпимо\./).waitFor();
     await guest.getByText(/Minecraft начал попытку подключения/).waitFor();
     await delay(3500); // Several more polls must not repeat the request.
     assert.deepEqual(await guest.evaluate(() => window.__joins), [{ pairingCode: null }]);
@@ -444,6 +446,36 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       ['add_server_entry'],
     ]);
     await ready.close();
+
+    // The host sees who is in the world with their ping, and a notice when that changes.
+    const party = await browser.newPage();
+    await party.addInitScript(() => {
+      window.__players = [];
+      window.__TAURI_INTERNALS__ = { invoke: async command => {
+        if (command === 'status') return { mode: 'host', endpoint: null, active_connections: window.__players.length, last_error: null, transport: null, players: window.__players, rtt_ms: null };
+        if (command === 'servers' || command === 'codes') return [];
+        return null;
+      }};
+    });
+    await party.goto(baseUrl);
+    const players = party.getByLabel('Игроки в мире');
+    await players.getByText('В мире пока никого').waitFor();
+    await delay(1500); // Several polls without players notify nothing.
+    assert.equal(await party.locator('.toasts').count(), 0);
+    await party.evaluate(() => { window.__players = [{ id: 4, name: 'Steve', since: 0, rtt_ms: null }, { id: 5, name: null, since: 0, rtt_ms: 250 }]; });
+    await players.getByText('В мире: 2').waitFor();
+    await players.getByText('пинг измеряется…').waitFor();
+    await players.getByText('пинг 250 мс, возможны задержки').waitFor();
+    await players.getByText('Друг', { exact: true }).waitFor();
+    await party.locator('.toasts').getByText('Steve теперь в вашем мире').waitFor();
+    await party.locator('.toasts').getByText('Друг теперь в вашем мире').waitFor();
+    await party.evaluate(() => { window.__players = [{ id: 5, name: null, since: 0, rtt_ms: 34 }]; });
+    await players.getByText('пинг 34 мс', { exact: true }).waitFor();
+    await party.locator('.toasts').getByText('Steve больше не в мире').waitFor();
+    // Notices go away by themselves, although the status keeps refreshing.
+    await party.locator('.toasts').waitFor({ state: 'detached', timeout: 25000 });
+    assert.equal(await players.getByText('В мире: 1').count(), 1);
+    await party.close();
   } finally {
     if (browser) await browser.close();
     server.kill();

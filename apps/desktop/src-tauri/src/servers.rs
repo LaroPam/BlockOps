@@ -191,6 +191,7 @@ pub async fn stop_server(
 }
 #[tauri::command]
 pub async fn invite_server(
+    app: tauri::AppHandle,
     state: State<'_, Servers>,
     tunnel: State<'_, super::AppState>,
     id: String,
@@ -207,6 +208,7 @@ pub async fn invite_server(
     }
     let server = state.manager.get(&id).map_err(|e| e.to_string())?;
     super::make_host(
+        app,
         tunnel,
         format!("127.0.0.1:{}", server.settings.port),
         relay,

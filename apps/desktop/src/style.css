@@ -234,3 +234,13 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .connection-choice label { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
 .connection-choice input { width: auto; min-height: 0; }
 .connection-choice p { margin: 4px 0 8px 26px; font-size: 14px; }
+
+/* Who is in the host's world, and short notices when that changes. */
+.players { margin: 20px 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.players h3 { margin: 0; font-size: 15px; }
+.players ul { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+.players li { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.players li span { color: var(--muted); font-size: 13px; }
+.players p { margin: 8px 0 0; font-size: 13px; }
+.toasts { position: fixed; right: 16px; bottom: 16px; left: 16px; display: grid; justify-items: end; gap: 8px; pointer-events: none; z-index: 10; }
+.toasts p { margin: 0; max-width: 360px; padding: 12px 16px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface-raised); color: var(--text); box-shadow: 0 6px 24px rgb(0 0 0 / .35); }

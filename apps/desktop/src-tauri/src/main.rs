@@ -64,6 +64,8 @@ struct View {
     active_connections: usize,
     last_error: Option<String>,
     transport: Option<String>,
+    players: Vec<blockops_tunnel::Player>,
+    rtt_ms: Option<u32>,
 }
 fn view(mode: &str, session: &Session) -> View {
     let status = session.status.borrow();
@@ -74,11 +76,61 @@ fn view(mode: &str, session: &Session) -> View {
         active_connections: status.active_connections,
         last_error: status.last_error.clone(),
         transport: status.transport.clone(),
+        players: status.players.clone(),
+        rtt_ms: status.rtt_ms,
     }
+}
+
+/// "Steve теперь в вашем мире" for each arrival and "… больше не в мире" for each departure.
+fn player_changes(
+    before: &[blockops_tunnel::Player],
+    after: &[blockops_tunnel::Player],
+) -> Vec<String> {
+    let name = |player: &blockops_tunnel::Player| player.name.clone().unwrap_or("Друг".into());
+    let arrived = after
+        .iter()
+        .filter(|p| !before.iter().any(|b| b.id == p.id))
+        .map(|p| format!("{} теперь в вашем мире", name(p)));
+    let left = before
+        .iter()
+        .filter(|p| !after.iter().any(|a| a.id == p.id))
+        .map(|p| format!("{} больше не в мире", name(p)));
+    arrived.chain(left).collect()
+}
+
+/// Tell the host in a Windows notification when friends come and go while BlockOps is in
+/// the background; the window shows its own notice. Ends with the session.
+fn notify_players(
+    app: tauri::AppHandle,
+    mut status: tokio::sync::watch::Receiver<blockops_tunnel::Status>,
+) {
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_notification::NotificationExt;
+        let mut known = status.borrow_and_update().players.clone();
+        while status.changed().await.is_ok() {
+            let players = status.borrow_and_update().players.clone();
+            let changes = player_changes(&known, &players);
+            known = players;
+            let focused = app
+                .get_webview_window("main")
+                .and_then(|window| window.is_focused().ok())
+                .unwrap_or(false);
+            if changes.is_empty() || focused {
+                continue;
+            }
+            let _ = app
+                .notification()
+                .builder()
+                .title("BlockOps")
+                .body(changes.join("\n"))
+                .show();
+        }
+    });
 }
 /// `direct` meets friends through the public network instead of a coordinator and relay.
 #[tauri::command]
 async fn host(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
@@ -86,6 +138,7 @@ async fn host(
     direct: Option<bool>,
 ) -> Result<View, String> {
     make_host(
+        app,
         state,
         target,
         relay,
@@ -96,6 +149,7 @@ async fn host(
     .await
 }
 async fn make_host(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     target: String,
     relay: Option<String>,
@@ -177,6 +231,7 @@ async fn make_host(
         }
     }
     let result = view("host", &session);
+    notify_players(app, session.status.clone());
     let owner = world_watch_id
         .map(|id| format!("world-watch:{id}"))
         .or(owner);
@@ -827,6 +882,7 @@ fn open_eula(app: tauri::AppHandle) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState(
             Mutex::new(None),
             Mutex::new(Vec::new()),

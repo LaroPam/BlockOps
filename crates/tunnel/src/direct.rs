@@ -8,14 +8,15 @@
 //! of minutes and kilobytes, enough to meet and authenticate, so game streams only ever use
 //! the direct connection; a pair whose NATs cannot be punched needs a relay of their own.
 use crate::{
-    access, forward, now, pake, serve_stream, swarm, Behaviour, BehaviourEvent, Gate, Session,
-    Status, MAX_STREAMS, PROTOCOL, TIMEOUT,
+    access, forward, millis, now, pake, serve_stream, swarm, Behaviour, BehaviourEvent, Gate,
+    Roster, Session, Status, MAX_STREAMS, PROTOCOL, TIMEOUT,
 };
 use anyhow::{bail, ensure, Context, Result};
 use futures::StreamExt;
 use libp2p::{
     dcutr, identify, kad,
     multiaddr::Protocol,
+    ping,
     swarm::{ConnectionId, SwarmEvent},
     Multiaddr, PeerId, StreamProtocol, Swarm,
 };
@@ -427,9 +428,15 @@ pub async fn host_direct(target: SocketAddr, network: Network, ttl: Duration) ->
         let mut exchanges = JoinSet::new();
         let mut publishing: HashMap<kad::QueryId, pake::RendezvousKey> = HashMap::new();
         let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let (seats, mut roster_events) = mpsc::unbounded_channel();
+        let mut roster = Roster::default();
         loop {
             tokio::select! {
                 _ = stop.cancelled() => break,
+                Some(event) = roster_events.recv() => {
+                    roster.apply(event);
+                    status_tx.send_modify(|s| roster.publish(s));
+                }
                 _ = tick.tick() => {
                     let mut codes = codes.lock().unwrap();
                     for state in codes.values_mut() {
@@ -453,8 +460,12 @@ pub async fn host_direct(target: SocketAddr, network: Network, ttl: Duration) ->
                             }
                         }
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, .. } => {
+                    SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, num_established, .. } => {
                         links.closed(peer_id, connection_id, endpoint.is_relayed());
+                        if num_established == 0 { roster.disconnected(peer_id); }
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event { peer, result: Ok(rtt), .. })) => {
+                        if roster.measured(peer, rtt) { status_tx.send_modify(|s| roster.publish(s)); }
                     }
                     SwarmEvent::NewListenAddr { address, listener_id } => {
                         if links.reservations.contains_key(&listener_id) && address.iter().any(|p| p == Protocol::P2pCircuit) {
@@ -536,7 +547,7 @@ pub async fn host_direct(target: SocketAddr, network: Network, ttl: Duration) ->
                 Some(_) = exchanges.join_next(), if !exchanges.is_empty() => {}
                 Some((remote_peer, stream)) = incoming.next() => {
                     if tasks.len() >= MAX_STREAMS { drop(stream); continue; }
-                    tasks.spawn(serve_stream(stream, remote_peer, gate.clone(), target, expires));
+                    tasks.spawn(serve_stream(stream, remote_peer, gate.clone(), target, expires, seats.clone()));
                     status_tx.send_modify(|s| s.active_connections = tasks.len());
                 }
                 Some(result) = tasks.join_next(), if !tasks.is_empty() => {
@@ -625,7 +636,14 @@ pub async fn join_direct(code: &str, listener: TcpListener, network: Network) ->
                     SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, .. } => {
                         links.closed(peer_id, connection_id, endpoint.is_relayed());
                         if host.is_some_and(|(peer, _)| peer == peer_id) && !links.direct.contains_key(&peer_id) {
-                            status_tx.send_modify(|s| s.transport = None);
+                            status_tx.send_modify(|s| { s.transport = None; s.rtt_ms = None; });
+                        }
+                    }
+                    // Relayed round trips say nothing about play, which runs only on the direct link.
+                    SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event { peer, connection, result: Ok(rtt) })) => {
+                        let relayed = links.relayed.get(&peer).is_some_and(|relayed| relayed.contains(&connection));
+                        if host.is_some_and(|(host, _)| host == peer) && !relayed {
+                            status_tx.send_modify(|s| s.rtt_ms = Some(millis(&rtt)));
                         }
                     }
                     SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event { remote_peer_id, result: Err(error) })) => {

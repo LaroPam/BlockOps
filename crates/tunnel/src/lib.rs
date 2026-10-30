@@ -1,25 +1,28 @@
 pub mod access;
 pub mod direct;
+pub mod minecraft;
 pub mod pake;
 // Capability-gated, single-target TCP tunnel over authenticated libp2p streams.
 use anyhow::{bail, ensure, Context, Result};
 use futures::StreamExt;
 use libp2p::{
-    dcutr, identify, kad, noise, relay,
+    dcutr, identify, kad, noise, ping, relay,
     swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{BTreeMap, HashMap},
     net::SocketAddr,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{oneshot, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinSet,
 };
 use tokio_util::{compat::FuturesAsyncReadCompatExt, sync::CancellationToken};
@@ -34,6 +37,8 @@ struct Behaviour {
     identify: identify::Behaviour,
     dcutr: dcutr::Behaviour,
     streams: libp2p_stream::Behaviour,
+    /// Measures the round trip to every connected peer, shown as the friend's ping.
+    ping: ping::Behaviour,
     /// Only the serverless mode joins the public DHT.
     kad: Toggle<kad::Behaviour<kad::store::MemoryStore>>,
 }
@@ -70,6 +75,9 @@ fn swarm(key: libp2p::identity::Keypair, public: bool) -> Result<Swarm<Behaviour
                 )),
                 dcutr: dcutr::Behaviour::new(peer),
                 streams: libp2p_stream::Behaviour::new(),
+                ping: ping::Behaviour::new(
+                    ping::Config::new().with_interval(Duration::from_secs(10)),
+                ),
                 kad: kad.into(),
             }
         })?
@@ -84,13 +92,98 @@ enum Gate {
     Members(access::Access),
 }
 
-/// Serve one inbound tunnel stream: check its capability, then join it to the target.
+/// Who is in the world: one seat per login, announced to the session until dropped.
+enum RosterEvent {
+    Joined {
+        id: u64,
+        peer: PeerId,
+        name: Option<String>,
+    },
+    Left(u64),
+}
+
+/// Held while a player's connection lasts; dropping it, also by aborting the task, frees it.
+struct Seat {
+    id: u64,
+    events: mpsc::UnboundedSender<RosterEvent>,
+}
+impl Seat {
+    fn take(
+        events: &mpsc::UnboundedSender<RosterEvent>,
+        peer: PeerId,
+        name: Option<String>,
+    ) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let _ = events.send(RosterEvent::Joined { id, peer, name });
+        Self {
+            id,
+            events: events.clone(),
+        }
+    }
+}
+impl Drop for Seat {
+    fn drop(&mut self) {
+        let _ = self.events.send(RosterEvent::Left(self.id));
+    }
+}
+
+/// The host's view of its players and of the round trip to each friend's computer.
+#[derive(Default)]
+struct Roster {
+    players: BTreeMap<u64, (PeerId, Player)>,
+    rtts: HashMap<PeerId, Duration>,
+}
+impl Roster {
+    fn apply(&mut self, event: RosterEvent) {
+        match event {
+            RosterEvent::Joined { id, peer, name } => {
+                let player = Player {
+                    id,
+                    name,
+                    since: now(),
+                    rtt_ms: None,
+                };
+                self.players.insert(id, (peer, player));
+            }
+            RosterEvent::Left(id) => {
+                self.players.remove(&id);
+            }
+        }
+    }
+    /// Whether the measurement changes what the status shows.
+    fn measured(&mut self, peer: PeerId, rtt: Duration) -> bool {
+        self.rtts.insert(peer, rtt);
+        self.players.values().any(|(p, _)| *p == peer)
+    }
+    fn disconnected(&mut self, peer: PeerId) {
+        self.rtts.remove(&peer);
+    }
+    fn publish(&self, status: &mut Status) {
+        status.players = self
+            .players
+            .values()
+            .map(|(peer, player)| Player {
+                rtt_ms: self.rtts.get(peer).map(millis),
+                ..player.clone()
+            })
+            .collect();
+    }
+}
+
+fn millis(duration: &Duration) -> u32 {
+    duration.as_millis().try_into().unwrap_or(u32::MAX)
+}
+
+/// Serve one inbound tunnel stream: check its capability, then join it to the target. A
+/// login takes a seat for as long as the connection lasts; a server list ping does not.
 async fn serve_stream(
     stream: libp2p::Stream,
     remote_peer: PeerId,
     gate: Gate,
     target: SocketAddr,
     expires: u64,
+    roster: mpsc::UnboundedSender<RosterEvent>,
 ) -> Result<()> {
     let mut stream = stream.compat();
     let mut received = [0; 32];
@@ -113,9 +206,21 @@ async fn serve_stream(
         result = tokio::time::timeout(TIMEOUT, TcpStream::connect(target)) => result??,
     };
     stream.write_all(&[1]).await?;
+    let mut opening = Vec::new();
+    let _seat = tokio::select! {
+        _ = revoked.cancelled() => bail!("Member access revoked"),
+        kind = minecraft::sniff(&mut stream, &mut opening) => match kind {
+            minecraft::Opening::Status => None,
+            minecraft::Opening::Login(name) => Some(Seat::take(&roster, remote_peer, name)),
+            minecraft::Opening::Unknown => Some(Seat::take(&roster, remote_peer, None)),
+        },
+    };
     tokio::select! {
         _ = revoked.cancelled() => bail!("Member access revoked"),
-        result = tokio::io::copy_bidirectional(&mut stream, &mut target) => { result?; }
+        result = async {
+            target.write_all(&opening).await?;
+            tokio::io::copy_bidirectional(&mut stream, &mut target).await
+        } => { result?; }
     }
     Ok(())
 }
@@ -175,11 +280,28 @@ impl Invite {
     }
 }
 
+/// A player in the host's world.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Player {
+    /// Unique among the players of this application run.
+    pub id: u64,
+    /// The name the game logged in with, when it is a valid Minecraft name.
+    pub name: Option<String>,
+    /// When the player joined, in seconds since the Unix epoch.
+    pub since: u64,
+    /// Round trip to the player's computer, once measured.
+    pub rtt_ms: Option<u32>,
+}
+
 #[derive(Clone, Serialize, Default)]
 pub struct Status {
     pub active_connections: usize,
     pub last_error: Option<String>,
     pub transport: Option<String>,
+    /// Host: who is in the world through the tunnel. Server list pings are not players.
+    pub players: Vec<Player>,
+    /// Guest: round trip to the host's computer, once measured.
+    pub rtt_ms: Option<u32>,
 }
 
 pub struct Session {
@@ -281,10 +403,20 @@ async fn host_inner(
     let task = tokio::spawn(async move {
         let mut ready = Some(ready_tx);
         let mut tasks = JoinSet::new();
+        let (seats, mut roster_events) = mpsc::unbounded_channel();
+        let mut roster = Roster::default();
         loop {
             tokio::select! {
                 _ = stop.cancelled() => break,
+                Some(event) = roster_events.recv() => {
+                    roster.apply(event);
+                    status_tx.send_modify(|s| roster.publish(s));
+                }
                 event = swarm.select_next_some() => match event {
+                    SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event { peer, result: Ok(rtt), .. })) => {
+                        if roster.measured(peer, rtt) { status_tx.send_modify(|s| roster.publish(s)); }
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } => roster.disconnected(peer_id),
                     SwarmEvent::NewListenAddr { mut address, .. } => {
                         if address.iter().last() != Some(libp2p::multiaddr::Protocol::P2p(peer)) {
                             address.push(libp2p::multiaddr::Protocol::P2p(peer));
@@ -302,7 +434,7 @@ async fn host_inner(
                 },
                 Some((remote_peer, stream)) = incoming.next() => {
                     if tasks.len() >= MAX_STREAMS { drop(stream); continue; }
-                    tasks.spawn(serve_stream(stream, remote_peer, gate.clone(), target, expires));
+                    tasks.spawn(serve_stream(stream, remote_peer, gate.clone(), target, expires, seats.clone()));
                     status_tx.send_modify(|s| s.active_connections = tasks.len());
                 },
                 Some(result) = tasks.join_next(), if !tasks.is_empty() => {
@@ -381,7 +513,10 @@ pub async fn join_with_listener(
                         let relayed = endpoint.get_remote_address().iter().any(|p| p == libp2p::multiaddr::Protocol::P2pCircuit);
                         status_tx.send_modify(|s| s.transport = Some(if relayed { "relay" } else { "direct" }.into()));
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } if peer_id == peer => status_tx.send_modify(|s| s.transport = None),
+                    SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } if peer_id == peer => status_tx.send_modify(|s| { s.transport = None; s.rtt_ms = None; }),
+                    SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event { peer: measured, result: Ok(rtt), .. })) if measured == peer => {
+                        status_tx.send_modify(|s| s.rtt_ms = Some(millis(&rtt)));
+                    }
                     SwarmEvent::OutgoingConnectionError { error, .. } => status_tx.send_modify(|s| s.last_error = Some(error.to_string())),
                     SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => { swarm.add_external_address(info.observed_addr); }
                     _ => {}

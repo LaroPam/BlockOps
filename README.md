@@ -64,6 +64,9 @@ check additionally starts **two CLI client processes** and a relay process.
   reaches the main menu. It works through an owner-only descriptor and an HMAC-authenticated one-use
   local bridge; a manually copied code remains as a fallback. The installer carries every build, and
   the desktop installs the right one into a launcher profile after the player confirms.
+- The host sees who is in the world, by the name the game logs in with, and each friend's ping;
+  a notice (a Windows notification when BlockOps is in the background) tells when friends come
+  and go. Server list pings are not counted. Guests see their ping to the host.
 - A «Готовность к игре» panel shows at a glance whether Minecraft was found, whether the world is
   open (host) or the server is in Minecraft's list (guest), and the mod, with one-click fixes.
 
