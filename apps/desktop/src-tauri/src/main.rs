@@ -282,11 +282,9 @@ async fn join_code(
         return Err("Сначала остановите текущую сессию".into());
     }
     state.2.lock().await.take();
+    let listener = guest_listener().await?;
     // A four-group code was announced on the public network; others come from a coordinator.
     let session = if blockops_tunnel::pake::is_direct_code(&code) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| e.to_string())?;
         blockops_tunnel::direct::join_direct(
             &code,
             listener,
@@ -296,7 +294,7 @@ async fn join_code(
     } else {
         blockops_coordination::client::Client::new(&coordinator)
             .map_err(|e| e.to_string())?
-            .join(&code, "127.0.0.1:0".parse().unwrap())
+            .join_on(&code, listener)
             .await
     }
     .map_err(|e| e.to_string())?;
@@ -309,6 +307,85 @@ async fn join_code(
     *guard = Some(("join".into(), session, None));
     Ok(result)
 }
+/// The guest's fixed address, so a server saved in Minecraft works every time.
+const GUEST_ADDRESS: &str = "127.0.0.1:25595";
+const GUEST_SERVER_NAME: &str = "BlockOps — мир друга";
+
+/// The fixed address when it is free, otherwise any loopback port.
+async fn guest_listener() -> Result<tokio::net::TcpListener, String> {
+    match tokio::net::TcpListener::bind(GUEST_ADDRESS).await {
+        Ok(listener) => Ok(listener),
+        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| e.to_string()),
+    }
+}
+
+#[derive(Serialize)]
+struct ServerEntries {
+    address: &'static str,
+    added: usize,
+    present: usize,
+    failed: usize,
+}
+
+/// Add the guest's fixed address to the server list of every Minecraft game folder known
+/// from the launcher, the saved choice and the standard folder. Works in any version.
+#[tauri::command]
+async fn add_server_entry(servers: State<'_, servers::Servers>) -> Result<ServerEntries, String> {
+    let mut folders = Vec::new();
+    if let Ok(root) = launcher_root(None) {
+        folders.push(root.clone());
+        let root_for_scan = root.clone();
+        if let Ok(Ok(profiles)) = tokio::task::spawn_blocking(move || {
+            blockops_server_manager::minecraft_profiles::discover(&root_for_scan)
+        })
+        .await
+        {
+            folders.extend(
+                profiles
+                    .into_iter()
+                    .map(|p| std::path::PathBuf::from(p.game_dir)),
+            );
+        }
+    }
+    let manager = servers.manager.clone();
+    if let Ok(Ok(Some(selection))) =
+        tokio::task::spawn_blocking(move || manager.minecraft_selection()).await
+    {
+        folders.push(selection.game_dir.into());
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut seen = std::collections::HashSet::new();
+        let mut result = ServerEntries {
+            address: GUEST_ADDRESS,
+            added: 0,
+            present: 0,
+            failed: 0,
+        };
+        for folder in folders {
+            let Ok(folder) = folder.canonicalize() else {
+                continue;
+            };
+            if !folder.is_dir() || !seen.insert(folder.clone()) {
+                continue;
+            }
+            match blockops_server_manager::server_list::ensure_entry(
+                &folder,
+                GUEST_SERVER_NAME,
+                GUEST_ADDRESS,
+            ) {
+                Ok(true) => result.added += 1,
+                Ok(false) => result.present += 1,
+                Err(_) => result.failed += 1,
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|_| "Не удалось обновить список серверов Minecraft".to_owned())
+}
+
 const NO_COMPANION: &str = "Minecraft с модом BlockOps не найден на этом компьютере. Запустите игру с модом или введите код мода вручную.";
 
 /// Running Minecraft instances that advertise the mod through private discovery.
@@ -750,6 +827,7 @@ fn main() {
             local_minecraft,
             open_eula,
             discover_minecraft_profiles,
+            add_server_entry,
             blockops_mod_status,
             install_blockops_mod,
             remove_blockops_mod,

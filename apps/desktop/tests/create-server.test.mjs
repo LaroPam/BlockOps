@@ -259,11 +259,18 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
         if (command === 'local_minecraft') return window.__local;
         if (command === 'status') return window.__session;
         if (command === 'join_in_minecraft') { window.__joins.push(args); return null; }
+        if (command === 'add_server_entry') return { address: '127.0.0.1:25595', added: 2, present: 0, failed: 1 };
         if (command === 'servers') return [];
         return null;
       }};
     });
     await guest.goto(baseUrl);
+    // Any version: the fixed address is saved as a server in Minecraft with one click.
+    await guest.getByText('127.0.0.1:34567').waitFor();
+    await guest.getByText(/Постоянный адрес 127.0.0.1:25595 занят другой программой/).waitFor();
+    await guest.getByRole('button', { name: 'Добавить сервер в Minecraft' }).click();
+    await guest.getByText(/появился сервер «BlockOps — мир друга»/).waitFor();
+    await guest.getByText(/В 1 папке список серверов прочитать не удалось/).waitFor();
     await guest.getByText(/Откройте главное меню Minecraft: игра сама подключится/).waitFor();
     assert.equal(await guest.evaluate(() => window.__joins.length), 0, 'joined before Minecraft was ready');
     await guest.evaluate(() => { window.__local = { running: 1, open_worlds: 0, in_menu: 1 }; });

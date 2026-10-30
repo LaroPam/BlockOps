@@ -5,6 +5,7 @@ pub mod java;
 pub mod minecraft_profiles;
 pub mod minecraft_selection;
 pub mod process;
+pub mod server_list;
 mod settings_update;
 pub mod stop_states;
 pub mod whitelist;

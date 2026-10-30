@@ -18,6 +18,8 @@ type Session = {
 
 /** What Minecraft with the BlockOps mod reports doing on this computer. */
 type LanWorld = { port: number; name: string; version: string | null };
+/** The guest's fixed address; a server saved in Minecraft with it works every time. */
+const GUEST_ADDRESS = '127.0.0.1:25595';
 type LocalMinecraft = { running: number; open_worlds: number; in_menu: number; lan_worlds?: LanWorld[] };
 
 /** "«Steve - New World», Minecraft 1.20.1" from a LAN announcement, when known. */
@@ -58,6 +60,7 @@ function App() {
   const [pairingCode, setPairingCode] = useState('');
   const [joinFeedback, setJoinFeedback] = useState('');
   const [inviteNotice, setInviteNotice] = useState('');
+  const [serverEntry, setServerEntry] = useState('');
   const [coordinator, setCoordinator] = useState(() => savedSettings().coordinator);
   const [connection, setConnection] = useState<Connection>(() => savedSettings().connection);
   const direct = connection === 'direct';
@@ -195,6 +198,20 @@ function App() {
     finally { setBusy(false); }
   }
 
+  // Works in any version: the saved server points at the guest's fixed address.
+  async function addServerEntry() {
+    setBusy(true); setError(''); setServerEntry('');
+    try {
+      const result = await invoke<{ added: number; present: number; failed: number }>('add_server_entry');
+      const failed = result.failed ? ` В ${result.failed} папк${result.failed === 1 ? 'е' : 'ах'} список серверов прочитать не удалось.` : '';
+      setServerEntry((result.added > 0
+        ? 'Готово: в «Сетевой игре» появился сервер «BlockOps — мир друга». Если этот экран уже открыт, вернитесь в меню и откройте его снова.'
+        : result.present > 0 ? 'Сервер «BlockOps — мир друга» уже есть в «Сетевой игре».'
+        : 'Папка Minecraft не найдена. Добавьте сервер вручную с адресом выше.') + failed);
+    } catch (failure) { setError(String(failure)); }
+    finally { setBusy(false); }
+  }
+
   async function joinMinecraft(pairingCode: string | null) {
     setPairingCode(''); setBusy(true); setError(''); setJoinFeedback('');
     try {
@@ -207,7 +224,7 @@ function App() {
   async function stop() {
     setBusy(true);
     setError('');
-    try { await invoke('stop'); setSession(null); setInviteNotice(''); setPairingCode(''); setHostPairingCode(''); setWorldWatchId(null); setLanPort(''); setWorldFeedback(''); setJoinFeedback(''); }
+    try { await invoke('stop'); setSession(null); setInviteNotice(''); setServerEntry(''); setPairingCode(''); setHostPairingCode(''); setWorldWatchId(null); setLanPort(''); setWorldFeedback(''); setJoinFeedback(''); }
     catch (e) { setError(explainError(e)); }
     finally { setBusy(false); }
   }
@@ -288,7 +305,7 @@ function App() {
       </form>}
     </div><aside className="guide" aria-label="Как начать">
       <h2>{mode === 'host' ? 'Как начать' : 'Как присоединиться'}</h2>
-      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>BlockOps найдёт мир сам, в любой версии Minecraft Java.</span></li><li><strong>Пригласите друга</strong><span>Нажмите «Пригласить друга» и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите приглашение</strong><span>Друг пришлёт его в мессенджере.</span></li><li><strong>Вставьте его целиком</strong><span>BlockOps найдёт код и подключится сам.</span></li><li><strong>Откройте Minecraft</strong><span>С модом BlockOps игра подключится сама; без мода добавьте адрес в сетевой игре.</span></li></ol>}
+      {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>BlockOps найдёт мир сам, в любой версии Minecraft Java.</span></li><li><strong>Пригласите друга</strong><span>Нажмите «Пригласить друга» и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите приглашение</strong><span>Друг пришлёт его в мессенджере.</span></li><li><strong>Вставьте его целиком</strong><span>BlockOps найдёт код и подключится сам.</span></li><li><strong>Откройте Minecraft</strong><span>С модом BlockOps игра подключится сама; без мода выберите сервер «BlockOps» в «Сетевой игре».</span></li></ol>}
     </aside></div>
 
     {session && mode !== session.mode && <p className="notice">Активное соединение останется открытым. Чтобы создать новое, сначала отключите текущее.</p>}
@@ -302,7 +319,10 @@ function App() {
         <h2>Откройте Minecraft</h2>
         <p role="status">{session.transport === 'direct' ? 'Соединение с другом установлено напрямую.' : session.transport === 'relay' ? 'Соединение с другом установлено через relay.' : 'Устанавливаем соединение с другом…'}</p>
         {session.endpoint && <><label>Адрес сервера для Minecraft</label><code className="endpoint">{session.endpoint}</code></>}
-        <p>В Minecraft Java откройте «Сетевая игра», добавьте сервер и вставьте этот адрес. Доступность мира проверяется при подключении Minecraft.</p>
+        {session.endpoint && session.endpoint !== GUEST_ADDRESS && <p className="notice">Постоянный адрес {GUEST_ADDRESS} занят другой программой, поэтому сейчас адрес другой. Сохранённый сервер BlockOps заработает, когда адрес освободится.</p>}
+        <p>В любой версии Minecraft Java: откройте «Сетевая игра» и выберите сервер «BlockOps — мир друга». Адрес постоянный, поэтому сервер достаточно добавить один раз.</p>
+        <button type="button" disabled={!desktop || busy} onClick={() => void addServerEntry()}>Добавить сервер в Minecraft</button>
+        {serverEntry && <p role="status">{serverEntry}</p>}
         <div className="minecraft-join">
           <h3>Войти через мод BlockOps</h3>
           <p>{guestHint}</p>

@@ -55,6 +55,8 @@ check additionally starts **two CLI client processes** and a relay process.
 - Worlds opened to LAN are found automatically in any Minecraft Java version, from the game's own
   LAN announcement (accepted only from this computer), with name and version from a status ping;
   the tunnel stops once the announcements stop.
+- Guests use a fixed local address, and one click saves it as a server in Minecraft's own list
+  (servers.dat, edited without touching other entries), so joining takes two clicks in any version.
 - Experimental Fabric 1.21.1 companion: on Windows the desktop notices an opened LAN world by itself,
   one click prepares the connection and a copyable code, and the guest's Minecraft joins once it
   reaches the main menu. It works through an owner-only descriptor and an HMAC-authenticated one-use
