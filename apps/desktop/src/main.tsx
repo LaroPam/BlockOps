@@ -239,7 +239,7 @@ function App() {
     : local.open_worlds > 0 ? `Найден открытый для сети мир${announced ? ` ${describeWorld(announced.name, announced.version)}` : ''}.`
     : local.running > 0 ? 'Minecraft запущен. Откройте мир для сети: BlockOps найдёт его сам.'
     : 'Откройте мир в Minecraft и нажмите «Открыть для сети»: BlockOps найдёт его сам, в любой версии.';
-  const guestHint = !local ? 'С экспериментальным модом Fabric 1.21.1 откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.'
+  const guestHint = !local ? 'С модом BlockOps откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.'
     : local.running === 0 ? 'Запустите Minecraft с модом BlockOps: в главном меню игра сама подключится к миру друга. Мод можно установить в разделе «Найти мою сборку Minecraft».'
     : local.in_menu > 1 ? 'Запущено несколько копий Minecraft с модом BlockOps. Оставьте одну или войдите по коду мода.'
     : local.in_menu === 0 ? 'Откройте главное меню Minecraft: игра сама подключится к миру друга.'

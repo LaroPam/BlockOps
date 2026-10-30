@@ -6,6 +6,8 @@ import { Console } from './Console';
 import { Whitelist } from './Whitelist';
 type Server = {id:string; version:string; settings:{name:string;memory_mb:number;port:number;difficulty:string;max_players:number;whitelist:boolean;game_mode:string|null;pvp:boolean|null}};
 type Row = {server:Server;process:null|{phase:string;logs:string[];error:string|null;exit_code:number|null}};
+/** Mirrors RELEASES in crates/server-manager/src/artifacts.rs; the backend rejects anything else. */
+const VERSIONS:{id:string;java:number}[]=[{id:'26.3',java:25},{id:'1.21.11',java:21},{id:'1.21.4',java:21},{id:'1.21.1',java:21},{id:'1.20.4',java:17},{id:'1.20.1',java:17},{id:'1.19.2',java:17},{id:'1.18.2',java:17},{id:'1.16.5',java:8},{id:'1.12.2',java:8}];
 const phases:Record<string,string>={starting:'Запускается',running:'Работает',stopping:'Сохраняется и останавливается',stopped:'Остановлен',failed:'Ошибка запуска или работы'};
 function errorHint(message:string):string {
   if (message.includes('authentication keys')) return 'Minecraft не смог получить ключи для проверки игроков. Проверьте доступ к сетевым службам Minecraft.';
@@ -40,7 +42,7 @@ export function Servers({desktop,onInvite,relay,direct,createSignal}:{desktop:bo
     setBusy(true);setError(null);setNotice('');try{await invoke(command,args);if(command==='invite_server')onInvite();try{await refresh();}catch{/* Keep a successful operation successful; the list has its own error. */}return true;}catch(e){setError({message:String(e),id:typeof args.id==='string'?args.id:null});return false;}finally{setBusy(false);}
   }
   async function create(e:FormEvent){e.preventDefault();setCreating(true);const ok=await action('create_server',{settings:{name,memory_mb:memory,port,max_players:players,difficulty,whitelist,game_mode:gameMode,pvp},acceptEula:accepted,version});setCreating(false);if(ok){setAccepted(false);setCreateOpen(false);setNotice('Сервер создан. Запустите его, чтобы подготовить мир.');}}
-  return <section className="servers"><h2>Ваши серверы</h2><p>Vanilla с Java 21. Каждый мир хранится отдельно.</p>
+  return <section className="servers"><h2>Ваши серверы</h2><p>Vanilla от 1.12.2 до 26.3, нужная версия Java скачивается сама. Каждый мир хранится отдельно.</p>
     {!desktop ? <p>Список серверов доступен в приложении.</p> : !loaded ? <p>Загружаем список серверов…</p> : listError ? <p role="alert" className="error">Не удалось получить список серверов: {listError}</p> : rows.length===0 && <p>У вас пока нет серверов. Создайте первый мир.</p>}
     {notice && <p className="server-notice" role="status">{notice}</p>}
     {rows.map(({server,process})=><article className="card server" key={server.id}>
@@ -62,7 +64,8 @@ export function Servers({desktop,onInvite,relay,direct,createSignal}:{desktop:bo
       {creating && <p className="server-notice" role="status">Скачиваем и проверяем файлы Minecraft и Java. Не закрывайте приложение до завершения.</p>}
       {error && error.id===null && <ActionError message={error.message}/>}
       <fieldset disabled={creating}>
-      <label htmlFor="server-version">Версия Minecraft</label><select id="server-version" value={version} onChange={e=>setVersion(e.target.value)}><option value="1.21.1">Vanilla 1.21.1</option><option value="1.21.4">Vanilla 1.21.4</option></select>
+      <label htmlFor="server-version">Версия Minecraft</label><select id="server-version" value={version} onChange={e=>setVersion(e.target.value)}>{VERSIONS.map(v=><option key={v.id} value={v.id}>Vanilla {v.id}{v.id===VERSIONS[0].id?' — самая новая':''}</option>)}</select>
+      <p className="field-hint">Версия сервера должна совпадать с версией Minecraft у вас и у друзей. Java {VERSIONS.find(v=>v.id===version)?.java} BlockOps скачает и проверит сам.</p>
       <label htmlFor="server-name">Название</label><input id="server-name" required maxLength={60} value={name} onChange={e=>setName(e.target.value)}/>
       <details className="create-advanced" onInvalid={e=>{e.currentTarget.open=true;}}><summary>Настройки мира и сервера</summary><div className="settings-grid"><div><label htmlFor="ram">Память, МиБ</label><input id="ram" type="number" min={1024} max={16384} step={256} required value={memory} onChange={e=>setMemory(Number(e.target.value))}/></div>
       <div><label htmlFor="port">Локальный порт</label><input id="port" type="number" min={1024} max={65535} required value={port} onChange={e=>setPort(Number(e.target.value))}/></div>

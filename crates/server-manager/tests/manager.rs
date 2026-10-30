@@ -1,4 +1,6 @@
-use blockops_server_manager::{artifacts, properties_match, Difficulty, Manager, Settings};
+use blockops_server_manager::{
+    artifacts, properties_match, Difficulty, GameMode, Manager, Settings,
+};
 use std::io::Write;
 fn settings() -> Settings {
     Settings {
@@ -28,7 +30,7 @@ async fn eula_is_required_before_network_or_install() {
 }
 #[test]
 fn settings_and_properties_enforce_safe_launch() {
-    let safe = settings().properties().unwrap();
+    let safe = settings().properties(artifacts::VERSION).unwrap();
     assert!(safe.contains("online-mode=true\n"));
     assert!(safe.contains("server-ip=127.0.0.1\n"));
     assert!(properties_match(&format!("# generated\nview-distance=10\n{safe}"), &safe).unwrap());
@@ -55,6 +57,7 @@ fn settings_and_properties_enforce_safe_launch() {
     ] {
         assert!(properties_match(&format!("{safe}{override_line}\n"), &safe).is_err());
     }
+    assert!(settings().properties("1.20.2").is_err());
     let mut bad = settings();
     bad.memory_mb = 10;
     assert!(bad.validate().is_err());
@@ -352,17 +355,72 @@ async fn version_selection_rejects_unapproved_and_unsupported_releases() {
         .install_version(settings(), false, "1.21.4")
         .await
         .is_err());
-    assert!(manager
-        .install_version(settings(), true, "1.20.1")
-        .await
-        .is_err());
-    assert!(manager
-        .install_version(settings(), true, "../1.21.4")
-        .await
-        .is_err());
+    for unsupported in ["1.20.2", "1.8.9", "26.4-snapshot-6", "../1.21.4", ""] {
+        assert!(manager
+            .install_version(settings(), true, unsupported)
+            .await
+            .is_err());
+    }
     assert!(manager.list().unwrap().is_empty());
-    assert!(artifacts::supported_version("1.21.1"));
-    assert!(artifacts::supported_version("1.21.4"));
+    for version in [
+        "26.3", "1.21.11", "1.21.4", "1.21.1", "1.20.4", "1.20.1", "1.19.2", "1.18.2", "1.16.5",
+        "1.12.2",
+    ] {
+        assert!(artifacts::supported_version(version), "{version}");
+    }
+    assert!(artifacts::supported_version(artifacts::VERSION));
+}
+
+#[test]
+fn every_release_has_a_runtime_and_its_own_properties() {
+    let java = |version| artifacts::find_release(version).unwrap().java;
+    assert_eq!(java("26.3"), 25);
+    assert_eq!(java("1.21.1"), 21);
+    assert_eq!(java("1.20.4"), 17);
+    assert_eq!(java("1.18.2"), 17);
+    assert_eq!(java("1.16.5"), 8);
+    assert_eq!(java("1.12.2"), 8);
+    let mut chosen = settings();
+    chosen.difficulty = Difficulty::Hard;
+    chosen.game_mode = Some(GameMode::Creative);
+    let modern = chosen.properties("1.21.1").unwrap();
+    assert!(modern.contains("difficulty=hard\n") && modern.contains("gamemode=creative\n"));
+    assert!(modern.contains("enforce-secure-profile=true\n"));
+    // 1.18.2 predates the setting; 1.12.2 also reads modes as numbers.
+    let old = chosen.properties("1.18.2").unwrap();
+    assert!(!old.contains("enforce-secure-profile") && old.contains("difficulty=hard\n"));
+    let legacy = chosen.properties("1.12.2").unwrap();
+    assert!(legacy.contains("difficulty=3\n") && legacy.contains("gamemode=1\n"));
+    for release in artifacts::RELEASES {
+        let properties = chosen.properties(release.id).unwrap();
+        assert!(properties.contains("online-mode=true\n"), "{}", release.id);
+        assert!(
+            properties.contains("server-ip=127.0.0.1\n"),
+            "{}",
+            release.id
+        );
+        // Only Log4j older than 2.17, bundled before 1.17, needs the safe logging file.
+        assert_eq!(release.legacy_logging, release.java == 8, "{}", release.id);
+    }
+}
+
+#[test]
+fn java_versions_are_read_from_their_banner() {
+    for (banner, major) in [
+        (
+            "openjdk version \"1.8.0_504\"\nOpenJDK Runtime Environment",
+            Some(8),
+        ),
+        ("openjdk version \"17.0.21\" 2026-10-20", Some(17)),
+        ("openjdk version \"21.0.13\" 2026-10-20 LTS", Some(21)),
+        ("openjdk version \"25\" 2025-09-16", Some(25)),
+        ("openjdk version \"25.0.5+8-LTS\"", Some(25)),
+        ("java version \"1.7.0_80\"", Some(7)),
+        ("no banner", None),
+        ("openjdk version \"x\"", None),
+    ] {
+        assert_eq!(artifacts::java_major(banner), major, "{banner}");
+    }
 }
 
 #[test]
@@ -398,11 +456,11 @@ fn old_settings_deserialize_with_whitelist_disabled() {
     assert!(settings.game_mode.is_none());
     assert!(settings.pvp.is_none());
     assert!(settings
-        .properties()
+        .properties(artifacts::VERSION)
         .unwrap()
         .contains("white-list=false\n"));
     settings.whitelist = true;
-    let enabled = settings.properties().unwrap();
+    let enabled = settings.properties(artifacts::VERSION).unwrap();
     assert!(enabled.contains("white-list=true\n"));
     assert!(enabled.contains("online-mode=true\n"));
     assert!(enabled.contains("server-ip=127.0.0.1\n"));

@@ -46,7 +46,7 @@ impl From<GameModeArg> for GameMode {
 #[derive(Subcommand)]
 enum Action {
     List,
-    /// Downloads a supported Vanilla release and Java 21. Acceptance must be explicit.
+    /// Downloads a supported Vanilla release and the Java it needs. Acceptance must be explicit.
     Install {
         #[arg(long)]
         name: String,

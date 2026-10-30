@@ -37,7 +37,9 @@ check additionally starts **two CLI client processes** and a relay process.
 
 ## Included
 
-- Vanilla 1.21.1 and 1.21.4 manager: official verified JAR/Java downloads, explicit EULA acceptance,
+- Vanilla manager for 26.3, 1.21.11, 1.21.4, 1.21.1, 1.20.4, 1.20.1, 1.19.2, 1.18.2, 1.16.5 and
+  1.12.2: official verified JAR downloads with the matching Java 8/17/21/25, Log4Shell-safe logging
+  for the old releases, explicit EULA acceptance,
   SQLite registry, isolated worlds, safe settings, process supervisor and local command console.
 - Serverless mode by default: players meet through the public libp2p (IPFS) network, prove a
   one-use 80-bit code with SPAKE2 bound to their peer ids, and play over a hole-punched direct

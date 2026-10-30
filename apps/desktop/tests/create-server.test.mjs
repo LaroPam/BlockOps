@@ -25,7 +25,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       await delay(100);
     }
     browser = await chromium.launch({ executablePath: process.env.BLOCKOPS_CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
-    for (const choice of [{ mode: 'survival', pvp: true }, { mode: 'creative', pvp: false }]) {
+    for (const choice of [{ mode: 'survival', pvp: true }, { mode: 'creative', pvp: false, version: '1.12.2', java: 8 }]) {
       const page = await browser.newPage();
       await page.addInitScript(() => {
         window.__calls = [];
@@ -41,6 +41,10 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       const form = page.locator('form.create-card');
       const submit = form.getByRole('button', { name: 'Создать сервер', exact: true });
       assert.equal(await submit.isDisabled(), true);
+      if (choice.version) {
+        await form.locator('#server-version').selectOption(choice.version);
+        await form.getByText(`Java ${choice.java} BlockOps скачает`).waitFor();
+      }
       await form.locator('summary').click();
       await form.locator('#game-mode').selectOption(choice.mode);
       if (!choice.pvp) await form.getByRole('checkbox', { name: /PvP/ }).uncheck();
@@ -51,7 +55,7 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       assert.equal(request.settings.game_mode, choice.mode);
       assert.equal(request.settings.pvp, choice.pvp);
       assert.equal(request.acceptEula, true);
-      assert.equal(request.version, '1.21.1');
+      assert.equal(request.version, choice.version ?? '1.21.1');
       await page.close();
     }
     // The main host flow must use only the Minecraft port and bind the tunnel

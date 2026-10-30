@@ -166,6 +166,7 @@ footer span:first-child { font-weight: 650; color: var(--text); }
 .create-card h3 { margin: 0; }
 .create-heading p { margin: 8px 0 0; }
 .create-card fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.field-hint { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
 .create-advanced { margin-top: 20px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .create-advanced summary { padding: 16px 0; }
 .create-advanced[open] { padding-bottom: 16px; }

@@ -29,12 +29,16 @@ pub enum Difficulty {
     Hard,
 }
 impl Difficulty {
-    fn value(&self) -> &'static str {
-        match self {
-            Self::Peaceful => "peaceful",
-            Self::Easy => "easy",
-            Self::Normal => "normal",
-            Self::Hard => "hard",
+    fn value(&self, numeric: bool) -> &'static str {
+        match (self, numeric) {
+            (Self::Peaceful, false) => "peaceful",
+            (Self::Easy, false) => "easy",
+            (Self::Normal, false) => "normal",
+            (Self::Hard, false) => "hard",
+            (Self::Peaceful, true) => "0",
+            (Self::Easy, true) => "1",
+            (Self::Normal, true) => "2",
+            (Self::Hard, true) => "3",
         }
     }
 }
@@ -48,12 +52,16 @@ pub enum GameMode {
     Spectator,
 }
 impl GameMode {
-    fn value(&self) -> &'static str {
-        match self {
-            Self::Survival => "survival",
-            Self::Creative => "creative",
-            Self::Adventure => "adventure",
-            Self::Spectator => "spectator",
+    fn value(&self, numeric: bool) -> &'static str {
+        match (self, numeric) {
+            (Self::Survival, false) => "survival",
+            (Self::Creative, false) => "creative",
+            (Self::Adventure, false) => "adventure",
+            (Self::Spectator, false) => "spectator",
+            (Self::Survival, true) => "0",
+            (Self::Creative, true) => "1",
+            (Self::Adventure, true) => "2",
+            (Self::Spectator, true) => "3",
         }
     }
 }
@@ -94,11 +102,21 @@ impl Settings {
         );
         Ok(())
     }
-    pub fn properties(&self) -> Result<String> {
+    /// The managed server.properties lines, written the way `version` reads them.
+    pub fn properties(&self, version: &str) -> Result<String> {
         self.validate()?;
-        let mut properties = format!("server-ip=127.0.0.1\nserver-port={}\nonline-mode=true\nenforce-secure-profile=true\nenable-rcon=false\nenable-query=false\nwhite-list={}\nlevel-name=world\nmotd=BlockOps Vanilla\ndifficulty={}\nmax-players={}\n",self.port,self.whitelist,self.difficulty.value(),self.max_players);
+        let release = artifacts::find_release(version).context("Unsupported Minecraft version")?;
+        let numeric = release.numeric_modes;
+        let mut properties = format!(
+            "server-ip=127.0.0.1\nserver-port={}\nonline-mode=true\n",
+            self.port
+        );
+        if release.secure_profile {
+            properties.push_str("enforce-secure-profile=true\n");
+        }
+        properties.push_str(&format!("enable-rcon=false\nenable-query=false\nwhite-list={}\nlevel-name=world\nmotd=BlockOps Vanilla\ndifficulty={}\nmax-players={}\n",self.whitelist,self.difficulty.value(numeric),self.max_players));
         if let Some(mode) = &self.game_mode {
-            properties.push_str(&format!("gamemode={}\n", mode.value()));
+            properties.push_str(&format!("gamemode={}\n", mode.value(numeric)));
         }
         if let Some(pvp) = self.pvp {
             properties.push_str(&format!("pvp={pvp}\n"));
@@ -114,6 +132,41 @@ pub struct Server {
     pub jar_sha1: String,
     pub eula_accepted_at: u64,
 }
+impl Server {
+    pub fn properties(&self) -> Result<String> {
+        self.settings.properties(&self.version)
+    }
+}
+/// Mojang's server logging with lookups in messages disabled, the fix Mojang published for
+/// releases whose bundled Log4j is affected by CVE-2021-44228. Without it a chat message
+/// could make the server load code from the network.
+const LEGACY_LOGGING: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!-- Written by BlockOps on every start: message lookups stay disabled (CVE-2021-44228). -->
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="SysOut" target="SYSTEM_OUT">
+            <PatternLayout pattern="[%d{HH:mm:ss}] [%t/%level]: %msg{nolookups}%n" />
+        </Console>
+        <RollingRandomAccessFile name="File" fileName="logs/latest.log" filePattern="logs/%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="[%d{HH:mm:ss}] [%t/%level]: %msg{nolookups}%n" />
+            <Policies>
+                <TimeBasedTriggeringPolicy />
+                <OnStartupTriggeringPolicy />
+            </Policies>
+        </RollingRandomAccessFile>
+    </Appenders>
+    <Loggers>
+        <Root level="info">
+            <filters>
+                <MarkerFilter marker="NETWORK_PACKETS" onMatch="DENY" onMismatch="NEUTRAL" />
+            </filters>
+            <AppenderRef ref="SysOut" />
+            <AppenderRef ref="File" />
+        </Root>
+    </Loggers>
+</Configuration>
+"#;
+const LEGACY_LOGGING_FILE: &str = "blockops-log4j2.xml";
 #[derive(Clone)]
 pub struct Manager {
     root: PathBuf,
@@ -190,13 +243,14 @@ impl Manager {
             artifacts::supported_version(version),
             "Unsupported Minecraft version"
         );
+        let release = artifacts::find_release(version).context("Unsupported Minecraft version")?;
         let _lock = lock(&self.root.join("install.lock"))?;
         let artifact = artifacts::vanilla_version(version)
             .await
             .context("Cannot resolve official Minecraft metadata")?;
-        artifacts::java21(&self.root.join("runtimes"))
+        artifacts::java(&self.root.join("runtimes"), release.java)
             .await
-            .context("Cannot install verified Java 21")?;
+            .with_context(|| format!("Cannot install verified Java {}", release.java))?;
         let staged = tempfile::tempdir_in(self.root.join("servers"))?;
         artifacts::download_server(&artifact, &staged.path().join("server.jar")).await?;
         let server = Server {
@@ -208,7 +262,7 @@ impl Manager {
         };
         std::fs::write(
             staged.path().join("server.properties"),
-            server.settings.properties()?,
+            server.properties()?,
         )?;
         std::fs::write(
             staged.path().join("eula.txt"),
@@ -256,16 +310,14 @@ impl Manager {
         ensure!(
             properties_match(
                 &std::fs::read_to_string(dir.join("server.properties"))?,
-                &server.settings.properties()?
+                &server.properties()?
             )?,
             "Managed properties changed; restore the saved safe settings before starting"
         );
-        let java = self.root.join("runtimes/java21").join(if cfg!(windows) {
-            "bin/java.exe"
-        } else {
-            "bin/java"
-        });
-        artifacts::check_java(&java).await?;
+        let release =
+            artifacts::find_release(&server.version).context("Unsupported Minecraft version")?;
+        let java = artifacts::java_executable(&self.root.join("runtimes"), release.java);
+        artifacts::check_java(&java, release.java).await?;
         let probe =
             tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, server.settings.port))
                 .await
@@ -273,6 +325,10 @@ impl Manager {
         drop(probe); // Java must bind the actual port; subsequent conflicts surface in its logs.
         let mut command = tokio::process::Command::new(java);
         crate::java::configure(&mut command)?;
+        if release.legacy_logging {
+            std::fs::write(dir.join(LEGACY_LOGGING_FILE), LEGACY_LOGGING)?;
+            command.arg(format!("-Dlog4j.configurationFile={LEGACY_LOGGING_FILE}"));
+        }
         command.current_dir(dir).args([
             "-Xms512M",
             &format!("-Xmx{}M", server.settings.memory_mb),
