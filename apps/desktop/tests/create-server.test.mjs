@@ -334,7 +334,8 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
       window.__mod = { bundled: '0.1.0', installed: ['0.0.9'], current: false };
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         if (command === 'discover_minecraft_profiles') {
-          window.__calls.push(args);
+          // The readiness panel scans the standard folder by itself; record the manual search.
+          if (args.folder !== null) window.__calls.push(args);
           return [
             { name: 'Моя сборка', game_dir: 'C:\\Games\\Minecraft', version_id: 'custom', minecraft_version: '1.21.1', loader: 'fabric', metadata_complete: true },
             { name: 'Старая сборка', game_dir: 'C:\\Games\\Old', version_id: 'old', minecraft_version: '1.20.4', loader: 'fabric', metadata_complete: true },
@@ -388,6 +389,61 @@ test('server settings, detected LAN port and Minecraft profile discovery' , { ti
     const [, savedArgs] = await profiles.evaluate(() => window.__calls);
     assert.deepEqual(savedArgs.selection, { game_dir: 'C:\\Games\\Minecraft', loader: 'unknown' });
     await profiles.close();
+
+    // Readiness at a glance: Minecraft, the world or the server entry, and the optional mod.
+    const ready = await browser.newPage();
+    await ready.addInitScript(() => {
+      window.__local = { running: 0, open_worlds: 0, in_menu: 0, lan_worlds: [] };
+      window.__entry = false;
+      window.__readyCalls = [];
+      window.__mod = { bundled: '0.1.0', installed: [], current: false };
+      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === 'local_minecraft') return window.__local;
+        if (command === 'discover_minecraft_profiles') return [
+          { name: 'Fabric', game_dir: 'C:\\Games\\Fabric', version_id: 'fabric-loader-1.21.1', minecraft_version: '1.21.1', loader: 'fabric', metadata_complete: true },
+          { name: 'Последняя версия', game_dir: 'C:\\Minecraft', version_id: '1.20.1', minecraft_version: '1.20.1', loader: 'vanilla', metadata_complete: true },
+        ];
+        if (command === 'blockops_mod_targets') return [{ loader: 'fabric', minecraft: '1.21.1' }];
+        if (command === 'blockops_mod_status') return window.__mod;
+        if (command === 'install_blockops_mod') {
+          window.__readyCalls.push([command, args]);
+          window.__mod = { bundled: '0.1.0', installed: ['0.1.0'], current: true };
+          return window.__mod;
+        }
+        if (command === 'server_entry_present') return window.__entry;
+        if (command === 'add_server_entry') { window.__readyCalls.push([command]); window.__entry = true; return { address: '127.0.0.1:25595', added: 1, present: 0, failed: 0 }; }
+        if (command === 'detect_open_world') return { id: 3, port: 41234, name: 'Steve - World', version: '1.20.1' };
+        if (command === 'world_watch_alive') return true;
+        if (command === 'servers' || command === 'codes') return [];
+        return null;
+      }};
+    });
+    await ready.goto(baseUrl);
+    const panel = ready.locator('.readiness');
+    await panel.getByText('Сборок: 2 — Fabric 1.21.1, Vanilla 1.20.1').waitFor();
+    await panel.getByText('Осталось открыть мир для сети.').waitFor();
+    await panel.getByText('В игре: Esc → «Открыть для сети».').waitFor();
+    // The world shows up by itself once it is opened to LAN.
+    await ready.evaluate(() => { window.__local = { running: 0, open_worlds: 1, in_menu: 0, lan_worlds: [{ port: 41234, name: 'Steve - World', version: '1.20.1' }] }; });
+    await panel.getByText('Найден «Steve - World», Minecraft 1.20.1.').waitFor();
+    await panel.getByText('Всё готово к игре.').waitFor();
+    // The mod is offered for the fitting build only, and installed only after confirmation.
+    await panel.getByRole('button', { name: 'Установить в «Fabric» (Fabric 1.21.1)' }).click();
+    await panel.getByText(/добавит мод 0.1.0 в папку mods сборки «Fabric»/).waitFor();
+    assert.equal(await ready.evaluate(() => window.__readyCalls.length), 0, 'installed without confirmation');
+    await panel.getByRole('button', { name: 'Установить', exact: true }).click();
+    await panel.getByText('Установлен: Fabric 1.21.1.').waitFor();
+    // A guest needs the server entry, added with one click.
+    await ready.getByRole('button', { name: /Присоединиться/ }).click();
+    await panel.getByText('Осталось добавить сервер в Minecraft.').waitFor();
+    await panel.getByRole('button', { name: 'Добавить в Minecraft' }).click();
+    await panel.getByText('«BlockOps — мир друга» есть в «Сетевой игре».').waitFor();
+    await panel.getByText('Всё готово к игре.').waitFor();
+    assert.deepEqual(await ready.evaluate(() => window.__readyCalls), [
+      ['install_blockops_mod', { folder: null, gameDir: 'C:\\Games\\Fabric' }],
+      ['add_server_entry'],
+    ]);
+    await ready.close();
   } finally {
     if (browser) await browser.close();
     server.kill();

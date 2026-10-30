@@ -5,6 +5,7 @@ import './style.css';
 import { Servers } from './Servers';
 import { Codes } from './Codes';
 import { MinecraftProfiles } from './MinecraftProfiles';
+import { Readiness, type WorldReadiness } from './Readiness';
 import { explainError } from './errors';
 import { findCode, invitationText, type CodeStatus } from './invite';
 
@@ -68,6 +69,7 @@ function App() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<LocalMinecraft | null>(null);
+  const [readinessRevision, setReadinessRevision] = useState(0);
   const autoDetectTried = useRef(false);
   const autoJoinTried = useRef(false);
   const sessionRef = useRef<HTMLElement>(null);
@@ -208,6 +210,7 @@ function App() {
         ? 'Готово: в «Сетевой игре» появился сервер «BlockOps — мир друга». Если этот экран уже открыт, вернитесь в меню и откройте его снова.'
         : result.present > 0 ? 'Сервер «BlockOps — мир друга» уже есть в «Сетевой игре».'
         : 'Папка Minecraft не найдена. Добавьте сервер вручную с адресом выше.') + failed);
+      setReadinessRevision(value => value + 1);
     } catch (failure) { setError(String(failure)); }
     finally { setBusy(false); }
   }
@@ -239,6 +242,10 @@ function App() {
     : local.open_worlds > 0 ? `Найден открытый для сети мир${announced ? ` ${describeWorld(announced.name, announced.version)}` : ''}.`
     : local.running > 0 ? 'Minecraft запущен. Откройте мир для сети: BlockOps найдёт его сам.'
     : 'Откройте мир в Minecraft и нажмите «Открыть для сети»: BlockOps найдёт его сам, в любой версии.';
+  const world: WorldReadiness = session?.mode === 'host' ? { found: true, label: '', hosting: true }
+    : worldWatchId !== null ? { found: true, label: describeWorld(announced?.name, announced?.version), hosting: false }
+    : local ? { found: local.open_worlds > 0, label: describeWorld(announced?.name, announced?.version), hosting: false }
+    : null;
   const guestHint = !local ? 'С модом BlockOps откройте главное меню Minecraft на этом компьютере и нажмите кнопку: игра сама подключится к миру друга.'
     : local.running === 0 ? 'Запустите Minecraft с модом BlockOps: в главном меню игра сама подключится к миру друга. Мод можно установить в разделе «Найти мою сборку Minecraft».'
     : local.in_menu > 1 ? 'Запущено несколько копий Minecraft с модом BlockOps. Оставьте одну или войдите по коду мода.'
@@ -303,10 +310,10 @@ function App() {
         <p>Код можно использовать один раз. После перезапуска BlockOps потребуется новый.</p>
         <button className="primary" disabled={!desktop || busy || !invite.trim()}>{busy ? 'Подготавливаем подключение…' : 'Подключиться'}</button>
       </form>}
-    </div><aside className="guide" aria-label="Как начать">
+    </div><div className="side"><Readiness desktop={desktop} mode={mode} world={world} revision={readinessRevision}/><aside className="guide" aria-label="Как начать">
       <h2>{mode === 'host' ? 'Как начать' : 'Как присоединиться'}</h2>
       {mode === 'host' ? <ol><li><strong>Откройте свой мир</strong><span>Запустите Minecraft как обычно.</span></li><li><strong>Откройте для сети</strong><span>BlockOps найдёт мир сам, в любой версии Minecraft Java.</span></li><li><strong>Пригласите друга</strong><span>Нажмите «Пригласить друга» и отправьте ему код.</span></li></ol> : <ol><li><strong>Получите приглашение</strong><span>Друг пришлёт его в мессенджере.</span></li><li><strong>Вставьте его целиком</strong><span>BlockOps найдёт код и подключится сам.</span></li><li><strong>Откройте Minecraft</strong><span>С модом BlockOps игра подключится сама; без мода выберите сервер «BlockOps» в «Сетевой игре».</span></li></ol>}
-    </aside></div>
+    </aside></div></div>
 
     {session && mode !== session.mode && <p className="notice">Активное соединение останется открытым. Чтобы создать новое, сначала отключите текущее.</p>}
     {session && <section className="card session-card" ref={sessionRef} aria-live="polite">

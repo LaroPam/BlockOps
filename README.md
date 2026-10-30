@@ -59,16 +59,17 @@ check additionally starts **two CLI client processes** and a relay process.
   the tunnel stops once the announcements stop.
 - Guests use a fixed local address, and one click saves it as a server in Minecraft's own list
   (servers.dat, edited without touching other entries), so joining takes two clicks in any version.
-- Experimental Fabric 1.21.1 companion: on Windows the desktop notices an opened LAN world by itself,
-  one click prepares the connection and a copyable code, and the guest's Minecraft joins once it
+- Experimental companion mod for Fabric 1.21.1 and 1.20.1, NeoForge 1.21.1 and Forge 1.20.1: on
+  Windows the desktop gets the world's port from it, and the guest's Minecraft joins once it
   reaches the main menu. It works through an owner-only descriptor and an HMAC-authenticated one-use
-  local bridge; a manually copied code remains as a fallback. The installer carries the mod, which
-  needs only Fabric Loader, and the desktop installs it into a Fabric 1.21.1 launcher profile after
-  the player confirms.
+  local bridge; a manually copied code remains as a fallback. The installer carries every build, and
+  the desktop installs the right one into a launcher profile after the player confirms.
+- A «Готовность к игре» panel shows at a glance whether Minecraft was found, whether the world is
+  open (host) or the server is in Minecraft's list (guest), and the mod, with one-click fixes.
 
 ## Not included yet
 
-Other Minecraft versions/loaders, automatic backups, accounts,
+Loaders on BlockOps-managed servers, automatic backups, accounts,
 reliable NAT test matrix, automatic reconnect and signed installers. Nothing disables `online-mode` or opens router ports. Internet play
 works directly when hole punching succeeds; otherwise it needs an explicitly configured, reachable relay. The desktop uses per-member identity-bound codes. Legacy blockops-tunnel CLI JSON invites
 remain bearer secrets and are intended only for PoC compatibility.

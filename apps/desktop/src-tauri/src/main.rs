@@ -329,10 +329,9 @@ struct ServerEntries {
     failed: usize,
 }
 
-/// Add the guest's fixed address to the server list of every Minecraft game folder known
-/// from the launcher, the saved choice and the standard folder. Works in any version.
-#[tauri::command]
-async fn add_server_entry(servers: State<'_, servers::Servers>) -> Result<ServerEntries, String> {
+/// Every Minecraft game folder known from the launcher, the saved choice and the standard
+/// folder, each once.
+async fn game_folders(servers: &servers::Servers) -> Vec<std::path::PathBuf> {
     let mut folders = Vec::new();
     if let Ok(root) = launcher_root(None) {
         folders.push(root.clone());
@@ -357,6 +356,22 @@ async fn add_server_entry(servers: State<'_, servers::Servers>) -> Result<Server
     }
     tokio::task::spawn_blocking(move || {
         let mut seen = std::collections::HashSet::new();
+        folders
+            .into_iter()
+            .filter_map(|folder| folder.canonicalize().ok())
+            .filter(|folder| folder.is_dir() && seen.insert(folder.clone()))
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Add the guest's fixed address to the server list of every known game folder. Works in
+/// any version.
+#[tauri::command]
+async fn add_server_entry(servers: State<'_, servers::Servers>) -> Result<ServerEntries, String> {
+    let folders = game_folders(&servers).await;
+    tokio::task::spawn_blocking(move || {
         let mut result = ServerEntries {
             address: GUEST_ADDRESS,
             added: 0,
@@ -364,12 +379,6 @@ async fn add_server_entry(servers: State<'_, servers::Servers>) -> Result<Server
             failed: 0,
         };
         for folder in folders {
-            let Ok(folder) = folder.canonicalize() else {
-                continue;
-            };
-            if !folder.is_dir() || !seen.insert(folder.clone()) {
-                continue;
-            }
             match blockops_server_manager::server_list::ensure_entry(
                 &folder,
                 GUEST_SERVER_NAME,
@@ -384,6 +393,19 @@ async fn add_server_entry(servers: State<'_, servers::Servers>) -> Result<Server
     })
     .await
     .map_err(|_| "Не удалось обновить список серверов Minecraft".to_owned())
+}
+
+/// Whether some known game folder already lists the guest's fixed address. Reads only.
+#[tauri::command]
+async fn server_entry_present(servers: State<'_, servers::Servers>) -> Result<bool, String> {
+    let folders = game_folders(&servers).await;
+    tokio::task::spawn_blocking(move || {
+        folders.iter().any(|folder| {
+            blockops_server_manager::server_list::has_entry(folder, GUEST_ADDRESS).unwrap_or(false)
+        })
+    })
+    .await
+    .map_err(|_| "Не удалось прочитать список серверов Minecraft".to_owned())
 }
 
 const NO_COMPANION: &str = "Minecraft с модом BlockOps не найден на этом компьютере. Запустите игру с модом или введите код мода вручную.";
@@ -864,6 +886,7 @@ fn main() {
             open_eula,
             discover_minecraft_profiles,
             add_server_entry,
+            server_entry_present,
             blockops_mod_status,
             blockops_mod_targets,
             install_blockops_mod,

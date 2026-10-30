@@ -226,25 +226,36 @@ fn contains(root: &Tag, address: &[u8]) -> bool {
     })
 }
 
+/// The list in `path`, or an empty one when the file does not exist yet.
+fn read(path: &Path) -> Result<(Vec<u8>, Tag)> {
+    match fs::File::open(path) {
+        Ok(file) => {
+            ensure!(file.metadata()?.is_file(), "servers.dat is not a file");
+            let mut bytes = Vec::new();
+            file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() as u64 <= MAX_FILE, "servers.dat is too large");
+            parse(&bytes).context("servers.dat is not a valid server list")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok((Vec::new(), Tag::Compound(Vec::new())))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Whether the server list of `game_dir` already has an entry for `address`. Reads only.
+pub fn has_entry(game_dir: &Path, address: &str) -> Result<bool> {
+    let (_, root) = read(&game_dir.join("servers.dat"))?;
+    Ok(contains(&root, &java_string(address)?))
+}
+
 /// Put a server first in the list unless its address is already there. Returns whether the
 /// file changed. The previous file is kept as `servers.dat_old`, as Minecraft itself does.
 pub fn ensure_entry(game_dir: &Path, name: &str, address: &str) -> Result<bool> {
     ensure!(game_dir.is_dir(), "Minecraft game folder does not exist");
     let path = game_dir.join("servers.dat");
     let address = java_string(address)?;
-    let (root_name, mut root) = match fs::File::open(&path) {
-        Ok(file) => {
-            ensure!(file.metadata()?.is_file(), "servers.dat is not a file");
-            let mut bytes = Vec::new();
-            file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
-            ensure!(bytes.len() as u64 <= MAX_FILE, "servers.dat is too large");
-            parse(&bytes).context("servers.dat is not a valid server list")?
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            (Vec::new(), Tag::Compound(Vec::new()))
-        }
-        Err(error) => return Err(error.into()),
-    };
+    let (root_name, mut root) = read(&path)?;
     if contains(&root, &address) {
         return Ok(false);
     }
@@ -359,6 +370,9 @@ mod tests {
         };
         assert_eq!(servers[1], original_servers[0]);
         assert_eq!(entries[1], original_entries[1]);
+        assert!(has_entry(folder.path(), "127.0.0.1:25595").unwrap());
+        assert!(has_entry(folder.path(), "mc.example.org").unwrap());
+        assert!(!has_entry(folder.path(), "127.0.0.1:25596").unwrap());
         // A second call changes nothing.
         assert!(!ensure_entry(folder.path(), "BlockOps — мир друга", "127.0.0.1:25595").unwrap());
         assert_eq!(
@@ -370,6 +384,8 @@ mod tests {
     #[test]
     fn a_missing_list_is_created_and_a_broken_one_is_left_alone() {
         let folder = tempfile::tempdir().unwrap();
+        assert!(!has_entry(folder.path(), "127.0.0.1:25595").unwrap());
+        assert!(!folder.path().join("servers.dat").exists());
         assert!(ensure_entry(folder.path(), "BlockOps", "127.0.0.1:25595").unwrap());
         let (_, root) = parse(&fs::read(folder.path().join("servers.dat")).unwrap()).unwrap();
         assert!(contains(&root, b"127.0.0.1:25595"));
@@ -378,6 +394,7 @@ mod tests {
         let broken = tempfile::tempdir().unwrap();
         fs::write(broken.path().join("servers.dat"), b"\x0a\x00\x00\x09").unwrap();
         assert!(ensure_entry(broken.path(), "BlockOps", "127.0.0.1:25595").is_err());
+        assert!(has_entry(broken.path(), "127.0.0.1:25595").is_err());
         assert_eq!(
             fs::read(broken.path().join("servers.dat")).unwrap(),
             b"\x0a\x00\x00\x09"
