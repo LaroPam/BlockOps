@@ -177,8 +177,56 @@ fn millis(duration: &Duration) -> u32 {
     duration.as_millis().try_into().unwrap_or(u32::MAX)
 }
 
-/// Serve one inbound tunnel stream: check its capability, then join it to the target. A
-/// login takes a seat for as long as the connection lasts; a server list ping does not.
+/// Carry a game connection both ways without holding anything back, while a copy of its
+/// first bytes tells a login, which takes a seat for as long as the connection lasts, from
+/// a server list ping, which does not.
+async fn relay(
+    stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    target: TcpStream,
+    roster: &mpsc::UnboundedSender<RosterEvent>,
+    peer: PeerId,
+) -> std::io::Result<()> {
+    let (mut from_guest, mut to_guest) = tokio::io::split(stream);
+    let (mut from_world, mut to_world) = target.into_split();
+    // Freed when the whole connection ends, in either direction.
+    let mut seat: Option<Seat> = None;
+    let seat = &mut seat;
+    let upstream = async {
+        let mut sniffer = minecraft::Sniffer::default();
+        let quiet = tokio::time::sleep(minecraft::SNIFF);
+        tokio::pin!(quiet);
+        let mut buffer = vec![0u8; 16 * 1024];
+        loop {
+            let opening = tokio::select! {
+                read = from_guest.read(&mut buffer) => {
+                    let read = read?;
+                    if read == 0 {
+                        break;
+                    }
+                    to_world.write_all(&buffer[..read]).await?;
+                    sniffer.feed(&buffer[..read])
+                }
+                _ = &mut quiet, if !sniffer.decided() => sniffer.give_up(),
+            };
+            match opening {
+                Some(minecraft::Opening::Login(name)) => {
+                    *seat = Some(Seat::take(roster, peer, name));
+                }
+                Some(minecraft::Opening::Unknown) => *seat = Some(Seat::take(roster, peer, None)),
+                Some(minecraft::Opening::Status) | None => {}
+            }
+        }
+        to_world.shutdown().await
+    };
+    let downstream = async {
+        tokio::io::copy(&mut from_world, &mut to_guest).await?;
+        to_guest.shutdown().await
+    };
+    tokio::try_join!(upstream, downstream)?;
+    Ok(())
+}
+
+/// Serve one inbound tunnel stream: check its capability, then join it to the target.
 async fn serve_stream(
     stream: libp2p::Stream,
     remote_peer: PeerId,
@@ -202,27 +250,15 @@ async fn serve_stream(
         bail!("Invitation rejected");
     }
     let revoked = member.unwrap_or_default();
-    let mut target = tokio::select! {
+    let target = tokio::select! {
         biased;
         _ = revoked.cancelled() => bail!("Member access revoked"),
         result = tokio::time::timeout(TIMEOUT, TcpStream::connect(target)) => result??,
     };
     stream.write_all(&[1]).await?;
-    let mut opening = Vec::new();
-    let _seat = tokio::select! {
-        _ = revoked.cancelled() => bail!("Member access revoked"),
-        kind = minecraft::sniff(&mut stream, &mut opening) => match kind {
-            minecraft::Opening::Status => None,
-            minecraft::Opening::Login(name) => Some(Seat::take(&roster, remote_peer, name)),
-            minecraft::Opening::Unknown => Some(Seat::take(&roster, remote_peer, None)),
-        },
-    };
     tokio::select! {
         _ = revoked.cancelled() => bail!("Member access revoked"),
-        result = async {
-            target.write_all(&opening).await?;
-            tokio::io::copy_bidirectional(&mut stream, &mut target).await
-        } => { result?; }
+        result = relay(stream, target, &roster, remote_peer) => result?,
     }
     Ok(())
 }

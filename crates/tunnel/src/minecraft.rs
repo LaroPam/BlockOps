@@ -1,8 +1,8 @@
 //! Just enough of the Minecraft Java protocol (1.7 and later) to tell a player's login from a
 //! server list ping, and to read the name the game logs in with. Both come before encryption
-//! and compression. Every byte read is kept so the caller passes it on unchanged.
+//! and compression. The parser only looks at a copy of the first bytes: the connection
+//! itself is never held back.
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// How a connection to the world began.
 #[derive(Debug, PartialEq, Eq)]
@@ -11,40 +11,41 @@ pub enum Opening {
     Login(Option<String>),
     /// The server list asking for the world's status.
     Status,
-    /// Not recognised; treated like a player without a name.
+    /// Not recognised in time; treated like a player without a name.
     Unknown,
 }
 
 const MAX_HANDSHAKE: u32 = 1024;
-const SNIFF: Duration = Duration::from_secs(5);
+/// Enough for the longest handshake and the start of Login Start up to the name.
+const LIMIT: usize = 1200;
+/// How long the opening may take before the connection counts as unknown.
+pub const SNIFF: Duration = Duration::from_secs(5);
 
-async fn byte(reader: &mut (impl AsyncRead + Unpin), seen: &mut Vec<u8>) -> Option<u8> {
-    let byte = reader.read_u8().await.ok()?;
-    seen.push(byte);
-    Some(byte)
+enum Need {
+    More,
+    Bad,
 }
 
-async fn varint(reader: &mut (impl AsyncRead + Unpin), seen: &mut Vec<u8>) -> Option<u32> {
-    let first = byte(reader, seen).await?;
-    varint_from(first, reader, seen).await
-}
-
-/// A VarInt whose first byte was already read.
-async fn varint_from(
-    first: u8,
-    reader: &mut (impl AsyncRead + Unpin),
-    seen: &mut Vec<u8>,
-) -> Option<u32> {
-    let mut value = u32::from(first & 0x7f);
-    let mut last = first;
-    for shift in (7..35).step_by(7) {
-        if last & 0x80 == 0 {
-            return Some(value);
+fn varint(rest: &mut &[u8]) -> Result<u32, Need> {
+    let mut value = 0u32;
+    for shift in (0..35).step_by(7) {
+        let (&byte, tail) = rest.split_first().ok_or(Need::More)?;
+        *rest = tail;
+        value |= u32::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
         }
-        last = byte(reader, seen).await?;
-        value |= u32::from(last & 0x7f) << shift;
     }
-    (last & 0x80 == 0).then_some(value)
+    Err(Need::Bad)
+}
+
+fn take<'a>(rest: &mut &'a [u8], count: usize) -> Result<&'a [u8], Need> {
+    if rest.len() < count {
+        return Err(Need::More);
+    }
+    let (taken, tail) = rest.split_at(count);
+    *rest = tail;
+    Ok(taken)
 }
 
 /// A Minecraft name: 1 to 16 letters, digits or underscores.
@@ -52,78 +53,91 @@ fn valid_name(name: &str) -> bool {
     (1..=16).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-/// Read the start of a connection from the game. `seen` receives every byte read, also when
-/// the opening is not recognised or the game goes quiet.
-pub async fn sniff(reader: &mut (impl AsyncRead + Unpin), seen: &mut Vec<u8>) -> Opening {
-    tokio::time::timeout(SNIFF, read_opening(reader, seen))
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(Opening::Unknown)
+/// The next state a complete handshake packet asks for.
+fn next_state(mut packet: &[u8]) -> Option<u32> {
+    let packet = &mut packet;
+    if varint(packet).ok()? != 0 {
+        return None;
+    }
+    varint(packet).ok()?; // Protocol version.
+    let address = varint(packet).ok()? as usize;
+    take(packet, address).ok()?;
+    take(packet, 2).ok()?; // Port.
+    varint(packet).ok()
 }
 
-async fn read_opening(
-    reader: &mut (impl AsyncRead + Unpin),
-    seen: &mut Vec<u8>,
-) -> Option<Opening> {
-    let first = byte(reader, seen).await?;
-    // Versions before 1.7 ping with 0xFE, which newer servers still answer.
-    if first == 0xfe {
-        return Some(Opening::Status);
+/// Login Start begins with the name in every version; nothing after it is needed.
+fn login_name(rest: &mut &[u8]) -> Result<Option<String>, Need> {
+    varint(rest)?; // Packet length.
+    if varint(rest)? != 0 {
+        return Ok(None);
     }
-    let length = varint_from(first, reader, seen).await?;
-    if !(1..=MAX_HANDSHAKE).contains(&length) {
-        return None;
-    }
-    let start = seen.len();
-    for _ in 0..length {
-        byte(reader, seen).await?;
-    }
-    let mut packet = &seen[start..];
-    if read_varint(&mut packet)? != 0 {
-        return None;
-    }
-    read_varint(&mut packet)?; // Protocol version.
-    let address = read_varint(&mut packet)? as usize;
-    packet = packet.get(address..)?;
-    packet = packet.get(2..)?; // Port.
-    match read_varint(&mut packet)? {
-        1 => Some(Opening::Status),
-        // 3 is a transfer to this server (1.20.5 and later), which logs in the same way.
-        2 | 3 => Some(Opening::Login(login_name(reader, seen).await)),
-        _ => None,
-    }
-}
-
-/// Login Start begins with the name in every version; the rest is left to flow on.
-async fn login_name(reader: &mut (impl AsyncRead + Unpin), seen: &mut Vec<u8>) -> Option<String> {
-    varint(reader, seen).await?; // Packet length.
-    if varint(reader, seen).await? != 0 {
-        return None;
-    }
-    let length = varint(reader, seen).await?;
+    let length = varint(rest)?;
     if !(1..=64).contains(&length) {
-        return None;
+        return Ok(None);
     }
-    let start = seen.len();
-    for _ in 0..length {
-        byte(reader, seen).await?;
-    }
-    let name = std::str::from_utf8(&seen[start..]).ok()?;
-    valid_name(name).then(|| name.to_owned())
+    let name = take(rest, length as usize)?;
+    Ok(std::str::from_utf8(name)
+        .ok()
+        .filter(|name| valid_name(name))
+        .map(Into::into))
 }
 
-fn read_varint(packet: &mut &[u8]) -> Option<u32> {
-    let mut value = 0u32;
-    for shift in (0..35).step_by(7) {
-        let (&byte, rest) = packet.split_first()?;
-        *packet = rest;
-        value |= u32::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return Some(value);
-        }
+fn parse(bytes: &[u8]) -> Result<Opening, Need> {
+    let mut rest = bytes;
+    match rest.first() {
+        None => return Err(Need::More),
+        // Versions before 1.7 ping with 0xFE, which newer servers still answer.
+        Some(0xfe) => return Ok(Opening::Status),
+        Some(_) => {}
     }
-    None
+    let length = varint(&mut rest)?;
+    if !(1..=MAX_HANDSHAKE).contains(&length) {
+        return Err(Need::Bad);
+    }
+    let packet = take(&mut rest, length as usize)?;
+    match next_state(packet).ok_or(Need::Bad)? {
+        1 => Ok(Opening::Status),
+        // 3 is a transfer to this server (1.20.5 and later), which logs in the same way.
+        2 | 3 => login_name(&mut rest).map(Opening::Login),
+        _ => Err(Need::Bad),
+    }
+}
+
+/// Watches the first bytes a game sends and tells, once, how the connection began.
+#[derive(Default)]
+pub struct Sniffer {
+    seen: Vec<u8>,
+    decided: bool,
+}
+
+impl Sniffer {
+    pub fn decided(&self) -> bool {
+        self.decided
+    }
+
+    /// Look at the next bytes sent. Returns the opening as soon as it is known, then never
+    /// again.
+    pub fn feed(&mut self, bytes: &[u8]) -> Option<Opening> {
+        if self.decided {
+            return None;
+        }
+        let room = LIMIT - self.seen.len();
+        self.seen.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        let opening = match parse(&self.seen) {
+            Ok(opening) => opening,
+            Err(Need::More) if self.seen.len() < LIMIT => return None,
+            Err(_) => Opening::Unknown,
+        };
+        self.decided = true;
+        self.seen = Vec::new();
+        Some(opening)
+    }
+
+    /// The game went quiet before its opening was complete.
+    pub fn give_up(&mut self) -> Option<Opening> {
+        (!std::mem::replace(&mut self.decided, true)).then_some(Opening::Unknown)
+    }
 }
 
 #[cfg(test)]
@@ -162,79 +176,76 @@ mod tests {
         body.extend_from_slice(rest);
         packet(&body)
     }
-    async fn run(input: &[u8]) -> (Opening, Vec<u8>) {
-        let mut reader = input;
-        let mut seen = Vec::new();
-        let opening = sniff(&mut reader, &mut seen).await;
-        assert_eq!(
-            &input[..seen.len()],
-            seen.as_slice(),
-            "bytes must be kept in order"
-        );
-        (opening, seen)
+    /// The opening, fed at once and byte by byte, which must agree.
+    fn run(input: &[u8]) -> Option<Opening> {
+        let mut whole = Sniffer::default();
+        let at_once = whole.feed(input);
+        let mut sniffer = Sniffer::default();
+        let mut found = None;
+        for byte in input {
+            if let Some(opening) = sniffer.feed(std::slice::from_ref(byte)) {
+                assert!(found.is_none(), "decided twice");
+                found = Some(opening);
+            }
+        }
+        assert_eq!(found, at_once);
+        at_once
     }
 
-    #[tokio::test]
-    async fn logins_are_told_from_pings_and_keep_every_byte() {
+    #[test]
+    fn logins_are_told_from_pings() {
         // 1.21.1 login with the UUID that follows the name since 1.20.2.
         let mut input = handshake(767, "127.0.0.1", 2);
         input.extend(login_start("Steve_01", &[7; 16]));
-        let (opening, seen) = run(&input).await;
-        assert_eq!(opening, Opening::Login(Some("Steve_01".into())));
-        // Only the bytes up to the name were read; the UUID flows on.
-        assert_eq!(seen.len(), input.len() - 16);
+        assert_eq!(run(&input), Some(Opening::Login(Some("Steve_01".into()))));
 
         // A Forge 1.20.1 client marks the address; 1.12.2 sends the name alone.
         let mut forge = handshake(763, "127.0.0.1\0FML3\0", 2);
         forge.extend(login_start("Alex", &[]));
-        assert_eq!(run(&forge).await.0, Opening::Login(Some("Alex".into())));
+        assert_eq!(run(&forge), Some(Opening::Login(Some("Alex".into()))));
         let mut old = handshake(340, "localhost", 2);
         old.extend(login_start("notch", &[]));
-        assert_eq!(run(&old).await.0, Opening::Login(Some("notch".into())));
+        assert_eq!(run(&old), Some(Opening::Login(Some("notch".into()))));
 
         // A transfer logs in the same way.
         let mut transfer = handshake(767, "127.0.0.1", 3);
         transfer.extend(login_start("Steve", &[]));
-        assert_eq!(run(&transfer).await.0, Opening::Login(Some("Steve".into())));
+        assert_eq!(run(&transfer), Some(Opening::Login(Some("Steve".into()))));
 
         let mut status = handshake(767, "127.0.0.1", 1);
         status.extend(packet(&[0]));
-        let (opening, seen) = run(&status).await;
-        assert_eq!(opening, Opening::Status);
-        assert_eq!(seen.len(), status.len() - 2, "the status request flows on");
-        assert_eq!(run(&[0xfe, 0x01, 0xfa]).await.0, Opening::Status);
+        assert_eq!(run(&status), Some(Opening::Status));
+        assert_eq!(run(&[0xfe, 0x01, 0xfa]), Some(Opening::Status));
     }
 
-    #[tokio::test]
-    async fn anything_else_is_unknown_or_nameless() {
+    #[test]
+    fn anything_else_is_unknown_or_nameless() {
         // Names that are not Minecraft names are not shown.
         for name in ["", "Steve Jobs", "§cRed", "ThisNameIsWayTooLong", "Игрок"] {
             let mut input = handshake(767, "127.0.0.1", 2);
             input.extend(login_start(name, &[]));
-            assert_eq!(run(&input).await.0, Opening::Login(None), "{name:?}");
+            assert_eq!(run(&input), Some(Opening::Login(None)), "{name:?}");
         }
-        // Login cut short.
-        assert_eq!(
-            run(&handshake(767, "127.0.0.1", 2)).await.0,
-            Opening::Login(None)
-        );
         for input in [
-            Vec::new(),
             handshake(767, "127.0.0.1", 9),
             vec![0x80, 0x80, 0x80, 0x80, 0x80, 0x01],
             packet(&vec![0; 2000]),
-            b"GET / HTTP/1.1\r\n\r\n".to_vec(),
+            packet(&[5, 0, 0]),
+        ] {
+            assert_eq!(run(&input), Some(Opening::Unknown), "{input:?}");
+        }
+        // Too short to tell: the caller gives up after a while.
+        for input in [
+            Vec::new(),
+            b"ping".to_vec(),
+            handshake(767, "127.0.0.1", 2),
             handshake(767, "127.0.0.1", 2)[..5].to_vec(),
         ] {
-            assert_eq!(run(&input).await.0, Opening::Unknown, "{input:?}");
+            let mut sniffer = Sniffer::default();
+            assert_eq!(sniffer.feed(&input), None, "{input:?}");
+            assert_eq!(sniffer.give_up(), Some(Opening::Unknown));
+            assert_eq!(sniffer.give_up(), None);
+            assert_eq!(sniffer.feed(&input), None);
         }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_silent_game_is_not_waited_for() {
-        let (mut quiet, _writer) = tokio::io::duplex(64);
-        let mut seen = Vec::new();
-        assert_eq!(sniff(&mut quiet, &mut seen).await, Opening::Unknown);
-        assert!(seen.is_empty());
     }
 }
